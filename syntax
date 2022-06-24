@@ -1,0 +1,58 @@
+program -> (preprocessor | namespace | func_def | statement)*
+
+preprocessor -> '#[^\n]*'
+
+namespace -> 'namespace' access_desc :name '{'(func_def | statement)*'}'
+
+func_def -> access_desc 'inline'? 'func' :name '(' (memory_desc :name) ')' '{' statement* '}'
+
+statement -> (
+		  var_def
+		| var_set
+		| func_call
+		| raw_asm
+		| return
+	) ';' | (
+		  if
+		| while
+		| for
+	)
+
+var_def -> access_desc 'var' memory_desc :name ('[' expr ']' | '=' expr)
+
+var_set -> :name ('[' expr ']')? ((:operator)? '=' expr | '++' | '--')
+
+func_call -> selector? :name '(' (expr (',' expr)*)? ')'
+
+raw_asm -> '_asm_' '('? expr (',' expr)* ')'
+
+return -> 'return' expr?
+
+if -> 'if' '(' expr ')' ('{' statement* '}' | statement ';')
+
+while -> 'while' '(' expr ')' ('{' statement* '}' | statement ';')
+
+for -> 'for' '('memory_desc :name 'from' expr 'to' expr ('by' expr)? ')'
+	('{' statement* '}' | statement ';')
+
+access_desc -> ('public' | 'private')?
+
+
+expr ->
+	  var_ref
+	| operation
+	| func_call
+	| raw_asm
+	| a_reg
+	| literal
+	| '(' expr ')'
+
+var_ref -> selector? memory_desc :name
+
+selector -> :name '::'
+
+operation -> expr :operator expr
+
+a_reg -> '_getValueOfA_' '()'?
+
+memory_desc -> ('*' | '&')*

@@ -1,7 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TypeAlias, cast
+from typing import Callable, TypeAlias, TypeVar
 from re import compile as rec
 
 Pos: TypeAlias = tuple[int, int, str]
@@ -46,7 +46,7 @@ class TokenType(Enum):
 	OPERATOR = auto()
 	COLON = auto()
 	MEMBER_SELECT = auto()
-	COMPILER_FUNCTION = auto()
+	PREPROCESSOR = auto()
 	KEYWORD = auto()
 	BRACKET_OPEN = auto()
 	BRACKET_CLOSE = auto()
@@ -115,6 +115,11 @@ Keywords = {
 	"to": TokenType.KEYWORD,
 	"by": TokenType.KEYWORD,
 	"func": TokenType.KEYWORD,
+	"public": TokenType.KEYWORD,
+	"private": TokenType.KEYWORD,
+	"inline": TokenType.KEYWORD,
+	"_asm_": TokenType.KEYWORD,
+	"_valueOfA_": TokenType.KEYWORD,
 }
 
 
@@ -140,6 +145,8 @@ def tokenize(code: str, source: str) -> list[Token]:
 		c = next(pointer)
 		if c is None:
 			break
+
+		# comments
 		if tokens != [] and c == "/" and current == "" and tokens[-1].value == "/":
 			while True:
 				c = next(pointer)
@@ -148,7 +155,15 @@ def tokenize(code: str, source: str) -> list[Token]:
 				if c == "\n":
 					break
 			del tokens[-1]
-			current = ""
+			continue
+		if tokens != [] and c == "/" and current == "" and tokens[-1].value == "*":
+			while True:
+				c = next(pointer)
+				if c is None:
+					break
+				if c == "*" and next(pointer) == "/":
+					break
+			del tokens[-1]
 			continue
 
 		if current in CompoundTokens:
@@ -212,7 +227,7 @@ def tokenize(code: str, source: str) -> list[Token]:
 					current = ""
 					break
 				if c == "\n":
-					tokens.append(Token(TokenType.COMPILER_FUNCTION, current, pointer.pos))
+					tokens.append(Token(TokenType.PREPROCESSOR, current, pointer.pos))
 					current = ""
 					break
 			continue
@@ -237,13 +252,18 @@ class Container(ASTElement):
 
 
 @dataclass
+class Accessible(ASTElement):
+	name: str
+	private: bool | None = field(default=None, init=False)
+
+@dataclass
 class Root(Container):
 	includes: list[str]
 	definitions: dict[str,str]
 
 
 @dataclass
-class CompilerFunction(ASTElement):
+class Preprocessor(ASTElement):
 	value: str
 
 
@@ -253,8 +273,8 @@ class TokenElement(ASTElement):
 
 
 @dataclass
-class Namespace(Container):
-	name: str
+class Namespace(Accessible,Container):
+	default_private: bool | None = None
 
 
 @dataclass
@@ -277,471 +297,514 @@ class For(Container):
 
 @dataclass
 class VarDef(ASTElement):
-	name: str
+	var: Var
 	value: ASTExpression | None
-
-
-@dataclass
-class ArrayDef(ASTElement):
-	name: str
-	value: list[ASTExpression] | None
-	length: int
-
+	private: bool | None = None
+	offset: ASTExpression | None = None
 
 @dataclass
 class Return(ASTElement):
 	value: ASTExpression | None
 
 
-def _parse_expr(elements: list[ASTElement], errors: list[Error])\
-		-> ASTExpression:
-	return NotImplemented
+@dataclass
+class ASM(ASTElement):
+	exprs: list[ASTExpression]
 
 
-def _parse(container: Container, errors: list[Error]) -> None:
-	queue = container.children.copy()
-	stack: list[ASTElement] = []
-	new_element: ASTElement
-	# we will be moving elements from the queue to the stack
-	# trying to find patterns
-	while queue != []:
-		element = queue.pop(0)
-		if isinstance(element, TokenElement):
-			if element.token.type == TokenType.COMPILER_FUNCTION:
-				new_element = CompilerFunction(element.token.pos, element.token.value)
-				# try to recognize the compiler function
-				if element.token.value.split()[0] == "include":
-					if not isinstance(container, Root):
-						errors.append(Error(
-							"include directive can only be used in the root namespace",
-							element.token.pos
-						))
-						# ignore the include directive
-						continue
-					if len(element.token.value.split()) != 2:
-						errors.append(Error(
-							"include directive must have exactly one argument",
-							element.token.pos
-						))
-						# ignore the include directive
-						continue
-					container.includes.append(element.token.value.split()[1])
-					continue
-				if element.token.value.split()[0] == "define":
-					if not isinstance(container, Root):
-						errors.append(Error(
-							"define directive can only be used in the root namespace",
-							element.token.pos
-						))
-						# ignore the define directive
-						continue
-					if len(element.token.value.split()) < 3:
-						errors.append(Error(
-							"define directive must have two arguments",
-							element.token.pos
-						))
-						# ignore the define directive
-						continue
-					container.definitions[element.token.value.split()[1]] = \
-						" ".join(element.token.value.split()[2:])
-					continue
-				# else it's a compiler function
-				# we don't know what it is, either just now
-				# or we will never know
-				stack.append(new_element)
+@dataclass
+class FuncDef(Accessible, Container):
+	args: list[Var]
+
+
+@dataclass
+class Var(ASTElement):
+	name: str
+	memory_specifier: str | None = None
+
+
+@dataclass
+class VarSet(ASTElement):
+	var: Var
+	value: ASTExpression
+	offset: ASTExpression | None = None
+	modifier: str | None = None
+
+
+@dataclass
+class FuncCall(ASTElement):
+	name: str
+	args: list[ASTExpression]
+
+T = TypeVar('T')
+
+
+def _wrap(func: Callable[[Parser], T]) -> Callable[[Parser], T]:
+	def wrapper(parser: Parser) -> T:
+		try:
+			return func(parser)
+		except AssertionError as e:
+			try:
+				parser.errors.append(Error(str(e.args[0]), parser.token.pos))
+			except IndexError:
+				parser.errors.append(Error(str(e.args[0]), parser.tokens[-1].pos))
+			parser.consume_token()
+			return None  # type:ignore
+	return wrapper
+
+
+class Parser:
+	class _TokenViewType:
+		def __init__(self, parser: Parser):
+			self.parser = parser
+
+		def __getitem__(self, index: int) -> Token:
+			return self.parser.tokens[index+self.parser.tokens_i]
+
+		def __delitem__(self, index: int) -> None:
+			del self.parser.tokens[index+self.parser.tokens_i]
+
+	tokens: list[Token]
+	tokens_i = 0
+	errors: list[Error]
+	stack: list[Container]
+	root: Root
+
+	def __init__(
+			self,
+			tokens: list[Token], source: str, root: Root | None = None
+		):
+		self.tokens = tokens
+		self.errors = []
+		if root is None:
+			self.root = Root(
+				includes=[], definitions={}, pos=(0, 0, source), children=[]
+			)
+		else:
+			self.root = root
+
+		self.stack = [self.root]
+		self.container = self.root
+		self.token_view = self._TokenViewType(self)
+
+	def consume_token(self) -> bool:
+		self.tokens_i += 1
+		return self.tokens_i < len(self.tokens)
+
+	def consumer(self):
+		# do first passthrough without consuming
+		yield True
+		while self.consume_token():
+			yield True
+		yield False
+
+	def assert_(self, condition: bool, message: str = "") -> bool:
+		"""
+			Used when an breaking out would prevent the parser from continuing
+			thus preventing more errors being reported or when a error is recoverable
+		"""
+		if not(condition):
+			self.errors.append(Error(message, self.token.pos))
+		return condition
+
+	@property
+	def token(self):
+		return self.tokens[self.tokens_i]
+
+	@property
+	def head(self):
+		return self.stack[-1]
+
+	def parse(self):
+		# we start out at root, since else this would
+		# just call a method called `parse_root`
+		# and that would be stupid
+
+		# we are expecting either:
+		# - a preprocessor
+		# - a namespace
+		# - a function definition
+		# - a struct definition
+		# - a statement
+
+		consumer = self.consumer()
+
+		while next(consumer):
+			if self.token.type == TokenType.PREPROCESSOR:
+				self.parse_preprocessor()
 				continue
-			if element.token.type == TokenType.KEYWORD:
-				if element.token.value == "namespace":
-					# we expect a identifier followed by a container
-					if len(queue) < 2:
-						errors.append(Error("Expected a name", element.token.pos))
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error("Expected a name", element.token.pos))
-						continue
-					if queue[0].token.type != TokenType.IDENTIFIER:
-						errors.append(Error("Expected a name", element.token.pos))
-						continue
-					if not isinstance(queue[1], Container):
-						errors.append(Error("Expected a namespace body", element.token.pos))
-						continue
-					new_element = Namespace(
-						queue[0].token.pos, queue[1].children, queue[0].token.value
-					)
-					stack.append(new_element)
-					# remove the namespace body and name from the queue
-					queue.pop(0)
-					queue.pop(0)
-					continue
-				if element.token.value == "if":
-					# we expect an expression in parenthesis followed by a container
-					if len(queue) < 1:
-						errors.append(Error(
-							"Expected an expression in parenthesis and a body",
-							element.token.pos
-						))
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					if queue[0].token.type != TokenType.PAREN_OPEN:
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					# look for the closing parenthesis
-					paren_count = 1
-					for i,j in enumerate(queue):
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_OPEN:
-							paren_count += 1
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_CLOSE:
-							paren_count -= 1
-						if paren_count == 0:
-							break
-					else:
-						errors.append(Error("Expected a closing parenthesis", element.token.pos))
-						continue
-					# extract the expression
-					expression = queue[1:i]
-					# remove the expression and the parenthesis from the queue
-					queue = queue[i+1:]
-					n_expression = _parse_expr(expression, errors)
-					# check if the body is next
-					if len(queue) < 1:
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					if not isinstance(queue[0], Container):
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					stack.append(If(element.token.pos, queue[0].children, n_expression))
-				if element.token.value == "while":
-					# we expect an expression in parenthesis followed by a container
-					if len(queue) < 1:
-						errors.append(Error(
-							"Expected an expression in parenthesis and a body",
-							element.token.pos
-						))
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					if queue[0].token.type != TokenType.PAREN_OPEN:
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					# look for the closing parenthesis
-					paren_count = 1
-					for i,j in enumerate(queue):
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_OPEN:
-							paren_count += 1
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_CLOSE:
-							paren_count -= 1
-						if paren_count == 0:
-							break
-					else:
-						errors.append(Error("Expected a closing parenthesis", element.token.pos))
-						continue
-					# extract the expression
-					expression = queue[1:i]
-					# remove the expression and the parenthesis from the queue
-					queue = queue[i+1:]
-					n_expression = _parse_expr(expression, errors)
-					# check if the body is next
-					if len(queue) < 1:
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					if not isinstance(queue[0], Container):
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					stack.append(While(element.token.pos, queue[0].children, n_expression))
-				if element.token.value == "for":
-					# we expect:
-					# (id "from" expr "to" expr)
-					# or
-					# (id "from" expr "to" expr "by" expr)
-					if len(queue) < 1:
-						errors.append(Error(
-							"Expected an expression in parenthesis and a body",
-							element.token.pos
-						))
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					if queue[0].token.type != TokenType.PAREN_OPEN:
-						errors.append(Error(
-							"Expected an expression in parenthesis",
-							element.token.pos
-						))
-						continue
-					# look for the closing parenthesis
-					paren_count = 1
-					for i,j in enumerate(queue):
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_OPEN:
-							paren_count += 1
-						if isinstance(j, TokenElement)\
-							and j.token.type == TokenType.PAREN_CLOSE:
-							paren_count -= 1
-						if paren_count == 0:
-							break
-					else:
-						errors.append(Error("Expected a closing parenthesis", element.token.pos))
-						continue
-					# extract the expression
-					expression = queue[1:i]
 
-					# var is always the first element and is always a single token
-					if not isinstance(expression[0], TokenElement):
-						errors.append(Error("Expected a variable", element.token.pos))
-						continue
-					if expression[0].token.type != TokenType.IDENTIFIER:
-						errors.append(Error("Expected a variable", element.token.pos))
-						continue
-					var = expression[0].token.value
-					# check if "from" is next
-					if len(expression) < 2:
-						errors.append(Error("Expected 'from'", element.token.pos))
-						continue
-					if not isinstance(expression[1], TokenElement):
-						errors.append(Error("Expected 'from'", element.token.pos))
-						continue
-					if expression[1].token.value != "from":
-						errors.append(Error("Expected 'from'", element.token.pos))
-						continue
-					# look for the "to"
-					for i,j in enumerate(expression[2:]):
-						if isinstance(j, TokenElement)\
-							and j.token.value == "to":
-							break
-					else:
-						errors.append(Error("Expected 'to'", element.token.pos))
-						continue
-					# extract the expression
-					from_ = _parse_expr(expression[2:i+2], errors)
-					# check if "by" is ahead
-					i2 = -1
-					for i2,j2 in enumerate(expression[i+2:]):
-						if isinstance(j2, TokenElement)\
-							and j2.token.value == "by":
-							by = _parse_expr(expression[i+3+i2:], errors)
-							break
-					else:
-						by = None
-					to = _parse_expr(expression[i+2+i2:], errors)
-					# check if the body is next
-					if len(queue) < 1:
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					if not isinstance(queue[0], Container):
-						errors.append(Error("Expected a body", element.token.pos))
-						continue
-					stack.append(For(
-						element.token.pos, queue[0].children, var, from_, to, by
-					))
-				if element.token.value == "var":
-					# we expect:
-					# id;
-					# or
-					# id = expr;
-					# or
-					# id[num];
-					# or
-					# id = {expr, expr, ...};
+			if self.token.type == TokenType.KEYWORD:
 
-					# either way we expect an id token
-					if len(queue) < 1:
-						errors.append(Error("Expected an identifier", element.token.pos))
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error("Expected an identifier", element.token.pos))
-						continue
-					if queue[0].token.type != TokenType.IDENTIFIER:
-						errors.append(Error("Expected an identifier", element.token.pos))
-						continue
-					id = queue[0].token.value
-
-					# the next token is either a semicolon, an equal sign or a square bracket
-					if len(queue) < 1:
-						errors.append(Error(
-							"Unexpected end of container. Did you forget a semicolon?",
-							element.token.pos)
-						)
-						continue
-					if not isinstance(queue[0], TokenElement):
-						errors.append(Error("Invalid syntax", element.token.pos))
-						continue
-
-					if cast(TokenElement,queue[0]).token.type == TokenType.SEMICOLON:
-						# we can exit here
-						stack.append(VarDef(element.token.pos, id, None))
-						# clean up the queue
-						queue = queue[2:]
-						continue
-					elif cast(TokenElement,queue[0]).token.type == TokenType.EQUALS_SIGN:
-						# we expect an expression or a curly bracket
-						if len(queue) < 2:
-							errors.append(Error("Expected a value", element.token.pos))
-							continue
-						if isinstance(queue[1], Container):
-							items = []
-							# we expect expressions split by commas
-							s = 0
-							for i,j in enumerate(queue[1].children):
-								if isinstance(j, TokenElement)\
-									and j.token.value == ",":
-									items.append(_parse_expr(queue[1].children[s:i], errors))
-									s = i+1
-							if s < len(queue[1].children):
-								items.append(_parse_expr(queue[1].children[s:], errors))
-							stack.append(ArrayDef(element.token.pos, id, items, len(items)))
-							# we expect a semicolon
-							if len(queue) < 2:
-								errors.append(Error("Expected a semicolon", element.token.pos))
-								continue
-							if not isinstance(queue[2], TokenElement):
-								errors.append(Error("Expected a semicolon", element.token.pos))
-								continue
-							if queue[2].token.value != ";":
-								errors.append(Error("Expected a semicolon", element.token.pos))
-								continue
-							# clean up the queue
-							queue = queue[3:]
-							continue
-						# we expect an expression
-						# lookahead for a semicolon
-						for i,j in enumerate(queue[1:]):
-							if isinstance(j, TokenElement)\
-								and j.token.value == ";":
-								expr = _parse_expr(queue[1:i+1], errors)
-								# clean up the queue
-								queue = queue[i+2:]
-								stack.append(VarDef(element.token.pos, id, expr))
-								break
-						else:
-							errors.append(Error("Expected a semicolon", element.token.pos))
-							continue
-						continue
-					elif cast(TokenElement,queue[0]).token.type == TokenType.SQ_BRACKET_OPEN:
-						# we expect a number
-						if len(queue) < 2:
-							errors.append(Error("Expected a number", element.token.pos))
-							continue
-						if not isinstance(queue[1], TokenElement):
-							errors.append(Error("Expected a number", element.token.pos))
-							continue
-						if queue[1].token.type != TokenType.NUMBER:
-							errors.append(Error("Expected a number", element.token.pos))
-							continue
-						try:
-							num = int(queue[1].token.value)
-						except ValueError:
-							num = int(float(queue[1].token.value))
-
-						# we expect a square bracket close
-						if len(queue) < 3:
-							errors.append(Error(
-								"Expected a square bracket close", element.token.pos
-							))
-							continue
-						if not isinstance(queue[2], TokenElement):
-							errors.append(Error(
-								"Expected a square bracket close", element.token.pos
-							))
-							continue
-						if queue[2].token.type != TokenType.SQ_BRACKET_CLOSE:
-							errors.append(Error(
-								"Expected a square bracket close", element.token.pos
-							))
-							continue
-						# we expect a semicolon
-						if len(queue) < 3:
-							errors.append(Error("Expected a semicolon", element.token.pos))
-							continue
-						if not isinstance(queue[3], TokenElement):
-							errors.append(Error("Expected a semicolon", element.token.pos))
-							continue
-						if queue[3].token.value != ";":
-							errors.append(Error("Expected a semicolon", element.token.pos))
-							continue
-
-						# clean up the queue
-						queue = queue[4:]
-						stack.append(ArrayDef(element.token.pos, id, None, num))
-						continue
-				if element.token.value == "return":
-					# we expect an expression and a semicolon
-					# lookahead for a semicolon
-					for i,j in enumerate(queue[1:]):
-						if isinstance(j, TokenElement)\
-							and j.token.value == ";":
-							expr = _parse_expr(queue[1:i+1], errors)
-							# clean up the queue
-							queue = queue[i+2:]
-							stack.append(Return(element.token.pos, expr))
-							break
-					else:
-						errors.append(Error("Expected a semicolon", element.token.pos))
-						continue
+				if self.token.value == "namespace":
+					self.parse_namespace()
 					continue
 
+				if self.token.value == 'func':
+					self.parse_func()
+					continue
 
-def parse(tokens: list[Token]) -> tuple[Root,list[Error]]:
-	errors = []
+				if self.token.value == 'struct':
+					self.parse_struct()
+					continue
 
-	root = Root((0,0,tokens[0].pos[2]), [], [], {})
+				if self.token.value in {'private','public'}:
+					# this should be accessed later
+					continue
 
-	root.children = [
-		TokenElement(token=token, pos=token.pos)
-		for token in tokens
-	]
+				self.assert_(False, "Unexpected keyword")
 
-	# find bracket pairs
-	pairs: list[tuple[int,int]] = []
-	bracket_stack: list[int] = []
-	for i, token in enumerate(tokens):
-		if token.type == TokenType.BRACKET_OPEN:
-			bracket_stack.append(i)
-		elif token.type == TokenType.BRACKET_CLOSE:
-			if not bracket_stack:
-				errors.append(Error("Unmatched bracket", token.pos))
-				continue
-			pairs.append((bracket_stack.pop(), i))
-	if bracket_stack:
-		errors.extend(
-			Error("Unmatched bracket",tokens[i].pos)
-			for i in bracket_stack
+			self.parse_statement()
+
+	@_wrap
+	def parse_preprocessor(self):
+		# we expect a preprocessor thats either
+		# - a #include
+		# - a #define
+		# something else entirely
+
+		if self.token.value.startswith("#include"):
+			# place the include in the root
+			assert isinstance(self.container, Root), "#include must be in root"
+			self.root.includes.append(self.token.value.removeprefix("#include "))
+			return
+
+		if self.token.value.startswith("#define"):
+			# place the define in the root
+			assert isinstance(self.container, Root), "#define must be in root"
+			self.root.definitions[self.token.value.removeprefix("#define ")] = ""
+			return
+
+		# if we get here, we have a preprocessor
+		# that we don't know how to handle
+		raise AssertionError(f"Unknown preprocessor: {self.token.value[1:].split()[0]}")
+
+	@_wrap
+	def parse_namespace(self):
+		# we expect a `namespace` keyword
+		# then optionally a `public` or `private` keyword
+		# then a name
+		# and then the body
+
+		# create the namespace
+		# we will update it as we go
+		namespace = Namespace(
+			pos=self.token.pos,
+			name="<UNNAMED>",
+			children=[],
+		)
+		# check if we have a access specifier
+		if self.token_view[-1].type == TokenType.KEYWORD \
+			and self.token_view[-1].value in {'public','private'}:
+			namespace.private = self.token_view[-1].value == 'private'
+
+		self.consume_token()
+
+		# check if there is a default access specifier
+
+		if self.token.type == TokenType.KEYWORD \
+			and self.token.value in {'public','private'}:
+			namespace.default_private = self.token.value == 'private'
+			self.consume_token()
+
+		assert self.token.type == TokenType.IDENTIFIER, "Expected namespace name"
+
+		namespace.name = self.token.value
+
+		self.consume_token()
+
+		assert self.token.type == TokenType.BRACKET_OPEN, "Expected namespace body"
+		self.consume_token()
+
+		self.stack.append(namespace)
+
+		consumer = self.consumer()
+		while next(consumer):
+			if self.token.type == TokenType.BRACKET_CLOSE:
+				self.consume_token()
+				break
+			if self.token.type == TokenType.KEYWORD:
+				if self.token.value == "namespace":
+					self.parse_namespace()
+					continue
+				if self.token.value == "func":
+					self.parse_func()
+					continue
+				if self.token.value in {'private','public'}:
+					# this should be accessed later
+					continue
+
+			self.parse_statement()
+		else:
+			assert False, "Expected closing bracket"
+
+		self.stack.pop()
+
+		self.head.children.append(namespace)
+
+	@_wrap
+	def parse_func(self):
+
+		# construct the function
+		# we will update it as we go
+		func = FuncDef(
+			pos=self.token.pos,
+			name="<UNNAMED>",
+			children=[],
+			args=[],
 		)
 
-	# wrap tokens in containers
-	for i, j in pairs:
-		container = Container(pos=root.children[i].pos, children=[])
-		container.children = root.children[i+1:j]
-		root.children[i] = container
+		# check if we have a access specifier
+		if self.token_view[-1].type == TokenType.KEYWORD \
+			and self.token_view[-1].value in {'public','private'}:
+			func.private = self.token_view[-1].value == 'private'
 
-	# delete stale children
-	offset = 0
-	for i, j in pairs:
-		root.children[i+1-offset:j+1-offset] = []
-		offset += j-i-1
+		self.consume_token()
 
-	# do shit antlr would do for me but I'm a masochist
-	_parse(root,errors)
+		assert self.token.type == TokenType.IDENTIFIER, "Expected function name"
+		func.name = self.token.value
+		self.consume_token()
 
-	return root, errors
+		# there should be arguments in brackets
+
+		assert self.token.value == '(', "Expected opening bracket"
+		self.consume_token()
+
+		consumer = self.consumer()
+		memory_specifier: str = ""
+		while next(consumer):
+			if self.token.value == ')':
+				self.consume_token()
+				break
+
+			if self.token.type == TokenType.OPERATOR:
+				if self.assert_(self.token.value in "&*", "unknown "):
+					memory_specifier += self.token.value
+				continue
+
+			if self.token.type == TokenType.IDENTIFIER:
+				func.args.append(Var(
+					pos=self.token.pos,
+					name=self.token.value,
+					memory_specifier=memory_specifier,
+				))
+				memory_specifier = ""
+				self.consume_token()
+				self.assert_(
+					self.token.value in {',', ')'},
+					"Expected comma or closing bracket"
+				)
+				if self.token.value == ')':
+					break
+				continue
+			if self.token.type == TokenType.COMMA:
+				self.assert_(True, "Expected identifier")
+				continue
+			raise AssertionError(f"Unexpected token: {self.token.value}")
+		else:
+			assert False, "Expected closing bracket"
+
+		# self.consume_token()
+		assert self.token.type == TokenType.BRACKET_OPEN, "Expected function body"
+		self.consume_token()
+
+		self.stack.append(func)
+
+		consumer = self.consumer()
+
+		while next(consumer):
+			if self.token.type == TokenType.BRACKET_CLOSE:
+				# self.consume_token()
+				break
+			self.parse_statement()
+		else:
+			assert False, "Expected closing bracket"
+
+		self.stack.pop()
+
+		self.head.children.append(func)
+
+	@_wrap
+	def parse_statement(self):
+		# this can be either:
+		# - a variable declaration
+		# - a variable assignment
+		# - a function call
+		# - raw assembly
+		# - a return statement
+
+		if self.token.type == TokenType.KEYWORD:
+			if self.token.value == "return":
+				self.parse_return()
+				# expect a semi-colon
+				self.consume_token()
+				self.assert_(self.token.value == ';', "Expected semi-colon")
+				return
+			if self.token.value == "if":
+				self.parse_if()
+				return
+			if self.token.value == "while":
+				self.parse_while()
+				return
+			if self.token.value == "for":
+				self.parse_for()
+				return
+
+			if self.token.value == "_asm_":
+				self.parse_raw_asm()
+				return
+			if self.token.value == "var":
+				self.parse_var_def()
+				return
+
+		# if we get here, we have a function call or a variable assignment
+		# we need to figure out which
+		if self.token_view[1].type == TokenType.MEMBER_SELECT:
+			self.parse_member_select()
+			return
+		if self.token_view[1].type == TokenType.PAREN_OPEN:
+			self.parse_func_call()
+			return
+		# must be a variable assignment
+		self.parse_var_assignment()
+
+	@_wrap
+	def parse_var_def(self):
+		# construct the variable
+		# we will update it as we go
+		var = VarDef(
+			pos=self.token.pos,
+			var=Var(
+				pos=self.token.pos,
+				name="<UNNAMED>"
+			),
+			value=None,
+		)
+
+		# check if we have a access specifier
+		if self.token_view[-1].type == TokenType.KEYWORD \
+			and self.token_view[-1].value in {'public','private'}:
+			var.private = self.token_view[-1].value == 'private'
+
+		self.consume_token()
+
+		if self.token.type == TokenType.OPERATOR and self.token.value in "&*":
+			var.var.memory_specifier = self.token.value
+			self.consume_token()
+
+		assert self.token.type == TokenType.IDENTIFIER, "Expected variable name"
+		var.var.name = self.token.value
+		self.consume_token()
+
+		if self.token.type == TokenType.SQ_BRACKET_OPEN:
+			self.consume_token()
+			var.offset = self.parse_expression()
+			self.consume_token()
+			self.assert_(self.token.value == ']', "Expected closing bracket")
+			self.consume_token()
+
+		self.assert_(self.token.value in {'=',';'}, "Expected equals or semicolon")
+
+		if self.token.value == '=':
+			self.consume_token()
+			var.value = self.parse_expression()
+
+		self.consume_token()
+		self.assert_(self.token.value == ';', "Expected semicolon")
+
+		self.head.children.append(var)
+
+	@_wrap
+	def parse_var_assignment(self):
+		var = VarSet(
+			pos=self.token.pos,
+			var=Var(
+				pos=self.token.pos,
+				name="<UNNAMED>"
+			),
+			value=None,
+		)
+		if self.token.type == TokenType.OPERATOR and self.token.value in "&*":
+			var.var.memory_specifier = self.token.value
+			self.consume_token()
+
+		assert self.token.type == TokenType.IDENTIFIER, "Syntax error"
+		# the error is generic because parse_var_assignment is used
+		# as a guard clause for parse_statement, which itself is used
+		# as a guard clause for parse_namespace
+
+		var.var.name = self.token.value
+		self.consume_token()
+
+		if self.token.type == TokenType.SQ_BRACKET_OPEN:
+			self.consume_token()
+			var.offset = self.parse_expression()
+			self.consume_token()
+			self.assert_(self.token.value == ']', "Expected closing bracket")
+			self.consume_token()
+
+		if self.token.type == TokenType.OPERATOR:
+			var.modifier = self.token.value
+			self.consume_token()
+
+		if self.token.type == TokenType.MODIFIER:
+			var.modifier = self.token.value
+			self.consume_token()
+			# TODO: set `value` to 1
+
+		else:
+			self.assert_(self.token.value == '=', "Expected equals")
+			self.consume_token()
+			var.value = self.parse_expression()
+
+		self.consume_token()
+		self.assert_(self.token.value == ';', "Expected semicolon")
+
+		self.head.children.append(var)
+
+	@_wrap
+	def parse_func_call(self):
+		func = FuncCall(
+			pos=self.token.pos,
+			name="<UNNAMED>",
+			args=[],
+		)
+
+		func.name = self.token.value
+
+		self.consume_token()
+		self.assert_(self.token.value == '(', "Expected opening parenthesis")
+		self.consume_token()
+
+		if self.token.value != ')':
+			func.args.append(self.parse_expression())
+			while self.token.value == ',':
+				self.consume_token()
+				func.args.append(self.parse_expression())
+
+		self.assert_(self.token.value == ')', "Expected closing parenthesis")
+		self.consume_token()
+
+		self.head.children.append(func)
+
+	@_wrap
+	def parse_expression(self) -> ASTExpression:
+		assert False, "Expressions are not yet implemented"
+
+	@_wrap
+	def parse_member_select(self):
+		assert self.token.type == TokenType.IDENTIFIER, "Expected namespace name"
+		while self.token_view[2].type == TokenType.MEMBER_SELECT:
+			assert self.token_view[2].type == TokenType.IDENTIFIER,\
+				"Expected member name"
+			self.token.value += f"::{self.token_view[2].value}"
+			del self.token_view[1]
+			del self.token_view[2]
+
+
+# wrapper around Parser.parse()
+def parse(tokens: list[Token]) -> tuple[Root,list[Error]]:
+	parser = Parser(tokens, tokens[0].pos[2])
+	parser.parse()
+
+	return parser.root, parser.errors
