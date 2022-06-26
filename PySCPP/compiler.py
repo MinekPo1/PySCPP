@@ -11,6 +11,7 @@ Pos: TypeAlias = tuple[int, int, str]
 class Error:
 	message: str
 	pos: Pos
+	stack: list[Pos] = field(default_factory=list)
 
 
 class CodePointer:
@@ -57,6 +58,7 @@ class TokenType(Enum):
 	SEMICOLON = auto()
 	COMMA = auto()
 	EQUALS_SIGN = auto()
+	MEMORY_MODIFIER = auto()
 	ARROW = auto()
 	MODIFIER = auto()
 
@@ -87,6 +89,8 @@ SingleCharacterTokens = {
 	"{": TokenType.BRACKET_OPEN,
 	"}": TokenType.BRACKET_CLOSE,
 	":": TokenType.COLON,
+	"~": TokenType.MEMORY_MODIFIER,
+	"$": TokenType.MEMORY_MODIFIER,
 }
 
 
@@ -197,24 +201,23 @@ def tokenize(code: str, source: str) -> list[Token]:
 				token_shelf = None
 			continue
 
-		if current == "\"":
+		if current == "" and c == "\"":
+			print("q")
 			# look for end of string
 			while True:
 				current += c
 				c = next(pointer)
 				if c is None:
 					tokens.append(Token(TokenType.UNKNOWN, current, pointer.pos))
-					current = ""
 					break
 				if c == "\"" and current[-1] != "\\":
 					current += c
 					tokens.append(Token(TokenType.STRING, current, pointer.pos))
-					current = ""
 					break
 				if c == "\n":
 					tokens.append(Token(TokenType.UNKNOWN, current, pointer.pos))
-					current = ""
 					break
+			current = ""
 			continue
 
 		if current == "#":
@@ -255,6 +258,7 @@ class Container(ASTElement):
 class Accessible(ASTElement):
 	name: str
 	private: bool | None = field(default=None, init=False)
+
 
 @dataclass
 class Root(Container):
@@ -302,6 +306,7 @@ class VarDef(ASTElement):
 	private: bool | None = None
 	offset: ASTExpression | None = None
 
+
 @dataclass
 class Return(ASTElement):
 	value: ASTExpression | None
@@ -318,23 +323,55 @@ class FuncDef(Accessible, Container):
 
 
 @dataclass
-class Var(ASTElement):
+class Var(ASTExpression):
 	name: str
 	memory_specifier: str | None = None
 
 
 @dataclass
 class VarSet(ASTElement):
-	var: Var
+	l_value: Var | ASTExpression
 	value: ASTExpression
 	offset: ASTExpression | None = None
 	modifier: str | None = None
 
 
 @dataclass
-class FuncCall(ASTElement):
+class MemoryModifier(ASTExpression):
+	modifier: str
+	value: ASTExpression
+
+@dataclass
+class FuncCall(ASTExpression):
 	name: str
 	args: list[ASTExpression]
+
+
+@dataclass
+class Operation(ASTExpression):
+	op: str
+	left: ASTExpression
+	right: ASTExpression
+
+
+class GetValueOfA(ASTExpression):
+	pass
+
+
+@dataclass
+class RawASM(ASTExpression):
+	arguments: list[ASTExpression]
+
+
+@dataclass
+class Literal(ASTExpression):
+	value: str | int
+
+
+@dataclass
+class LiteralArray(ASTExpression):
+	values: list[ASTExpression]
+
 
 T = TypeVar('T')
 
@@ -344,10 +381,7 @@ def _wrap(func: Callable[[Parser], T]) -> Callable[[Parser], T]:
 		try:
 			return func(parser)
 		except AssertionError as e:
-			try:
-				parser.errors.append(Error(str(e.args[0]), parser.token.pos))
-			except IndexError:
-				parser.errors.append(Error(str(e.args[0]), parser.tokens[-1].pos))
+			parser.assert_(False,e.args[0])
 			parser.consume_token()
 			return None  # type:ignore
 	return wrapper
@@ -359,6 +393,8 @@ class Parser:
 			self.parser = parser
 
 		def __getitem__(self, index: int) -> Token:
+			if index+self.parser.tokens_i >= len(self.parser.tokens):
+				return Token(TokenType.UNKNOWN, "<EOF>", self.parser.tokens[-1].pos)
 			return self.parser.tokens[index+self.parser.tokens_i]
 
 		def __delitem__(self, index: int) -> None:
@@ -404,11 +440,18 @@ class Parser:
 			thus preventing more errors being reported or when a error is recoverable
 		"""
 		if not(condition):
-			self.errors.append(Error(message, self.token.pos))
+			stack = [c.pos for c in self.stack[1:]]
+
+			try:
+				self.errors.append(Error(message, self.token.pos,stack))
+			except AssertionError:
+				self.errors.append(Error(f"{message}(EOF)", self.tokens[-1].pos, stack))
 		return condition
 
 	@property
 	def token(self):
+		if self.tokens_i >= len(self.tokens):
+			raise AssertionError("EOF")
 		return self.tokens[self.tokens_i]
 
 	@property
@@ -444,10 +487,6 @@ class Parser:
 					self.parse_func()
 					continue
 
-				if self.token.value == 'struct':
-					self.parse_struct()
-					continue
-
 				if self.token.value in {'private','public'}:
 					# this should be accessed later
 					continue
@@ -477,7 +516,9 @@ class Parser:
 
 		# if we get here, we have a preprocessor
 		# that we don't know how to handle
-		raise AssertionError(f"Unknown preprocessor: {self.token.value[1:].split()[0]}")
+		raise AssertionError(
+			f"Unknown preprocessor: {self.token.value[1:].split()[0]}"
+		)
 
 	@_wrap
 	def parse_namespace(self):
@@ -536,7 +577,7 @@ class Parser:
 
 			self.parse_statement()
 		else:
-			assert False, "Expected closing bracket"
+			assert False, "Expected closing bracket "
 
 		self.stack.pop()
 
@@ -577,9 +618,8 @@ class Parser:
 				self.consume_token()
 				break
 
-			if self.token.type == TokenType.OPERATOR:
-				if self.assert_(self.token.value in "&*", "unknown "):
-					memory_specifier += self.token.value
+			if self.token.type == TokenType.MEMORY_MODIFIER:
+				memory_specifier += self.token.value
 				continue
 
 			if self.token.type == TokenType.IDENTIFIER:
@@ -595,16 +635,18 @@ class Parser:
 					"Expected comma or closing bracket"
 				)
 				if self.token.value == ')':
+					self.consume_token()
 					break
 				continue
 			if self.token.type == TokenType.COMMA:
 				self.assert_(True, "Expected identifier")
 				continue
-			raise AssertionError(f"Unexpected token: {self.token.value}")
+			self.assert_(False,f"Unexpected token: {self.token.value}")
 		else:
-			assert False, "Expected closing bracket"
+			assert False, "Expected closing parenthesis"
 
 		# self.consume_token()
+		print(">",self.token.value)
 		assert self.token.type == TokenType.BRACKET_OPEN, "Expected function body"
 		self.consume_token()
 
@@ -614,11 +656,12 @@ class Parser:
 
 		while next(consumer):
 			if self.token.type == TokenType.BRACKET_CLOSE:
+				print("<",self.token.value, func.name)
 				# self.consume_token()
 				break
 			self.parse_statement()
 		else:
-			assert False, "Expected closing bracket"
+			assert False, "Expected closing bracket "
 
 		self.stack.pop()
 
@@ -637,8 +680,8 @@ class Parser:
 			if self.token.value == "return":
 				self.parse_return()
 				# expect a semi-colon
-				self.consume_token()
 				self.assert_(self.token.value == ';', "Expected semi-colon")
+
 				return
 			if self.token.value == "if":
 				self.parse_if()
@@ -652,6 +695,7 @@ class Parser:
 
 			if self.token.value == "_asm_":
 				self.parse_raw_asm()
+				assert self.token.value == ';', "Expected semi-colon"
 				return
 			if self.token.value == "var":
 				self.parse_var_def()
@@ -661,12 +705,16 @@ class Parser:
 		# we need to figure out which
 		if self.token_view[1].type == TokenType.MEMBER_SELECT:
 			self.parse_member_select()
-			return
-		if self.token_view[1].type == TokenType.PAREN_OPEN:
+		print(self.token_view[1])
+		if self.token_view[1].type == TokenType.PAREN_OPEN and\
+			self.token.type == TokenType.IDENTIFIER:
 			self.parse_func_call()
+			# self.consume_token()
+			assert self.token.value == ';', "Expected semi-colon"
 			return
 		# must be a variable assignment
 		self.parse_var_assignment()
+		self.consume_token()
 
 	@_wrap
 	def parse_var_def(self):
@@ -688,7 +736,7 @@ class Parser:
 
 		self.consume_token()
 
-		if self.token.type == TokenType.OPERATOR and self.token.value in "&*":
+		if self.token.type == TokenType.MEMORY_MODIFIER:
 			var.var.memory_specifier = self.token.value
 			self.consume_token()
 
@@ -699,8 +747,8 @@ class Parser:
 		if self.token.type == TokenType.SQ_BRACKET_OPEN:
 			self.consume_token()
 			var.offset = self.parse_expression()
-			self.consume_token()
-			self.assert_(self.token.value == ']', "Expected closing bracket")
+			# self.consume_token()
+			self.assert_(self.token.value == ']', "Expected closing square bracket")
 			self.consume_token()
 
 		self.assert_(self.token.value in {'=',';'}, "Expected equals or semicolon")
@@ -718,39 +766,55 @@ class Parser:
 	def parse_var_assignment(self):
 		var = VarSet(
 			pos=self.token.pos,
-			var=Var(
+			l_value=Var(
 				pos=self.token.pos,
 				name="<UNNAMED>"
 			),
-			value=None,
+			value=None,  # type:ignore
 		)
-		if self.token.type == TokenType.OPERATOR and self.token.value in "&*":
-			var.var.memory_specifier = self.token.value
+		if self.token.type == TokenType.MEMORY_MODIFIER:
+			var.l_value.memory_specifier = self.token.value  # type:ignore
 			self.consume_token()
 
-		assert self.token.type == TokenType.IDENTIFIER, "Syntax error"
-		# the error is generic because parse_var_assignment is used
-		# as a guard clause for parse_statement, which itself is used
-		# as a guard clause for parse_namespace
+		if self.token.type == TokenType.PAREN_OPEN:
+			self.consume_token()
+			expr = self.parse_expression()
+			self.assert_(self.token.value == ')', "Expected closing parenthesis")
+			if var.l_value.memory_specifier:  # type:ignore
+				var.l_value = MemoryModifier(
+					self.token.pos,
+					var.l_value.memory_specifier,  # type:ignore
+					expr
+				)
+			else:
+				var.l_value = expr
 
-		var.var.name = self.token.value
-		self.consume_token()
+		else:
+			assert self.token.type == TokenType.IDENTIFIER, "Syntax error: " \
+				f"unexpected token `{self.token.value}`"
+			# the error is generic because parse_var_assignment is used
+			# as a guard clause for parse_statement, which itself is used
+			# as a guard clause for parse_namespace
+
+			var.l_value.name = self.token.value  # type:ignore
+			self.consume_token()
 
 		if self.token.type == TokenType.SQ_BRACKET_OPEN:
 			self.consume_token()
 			var.offset = self.parse_expression()
-			self.consume_token()
-			self.assert_(self.token.value == ']', "Expected closing bracket")
+			# self.consume_token()
+			self.assert_(self.token.type == TokenType.SQ_BRACKET_CLOSE,
+				"Expected closing square bracket")
 			self.consume_token()
 
-		if self.token.type == TokenType.OPERATOR:
+		if self.token.type == TokenType.MEMORY_MODIFIER:
 			var.modifier = self.token.value
 			self.consume_token()
 
 		if self.token.type == TokenType.MODIFIER:
 			var.modifier = self.token.value
 			self.consume_token()
-			# TODO: set `value` to 1
+			var.value = Literal(var.pos, 1)
 
 		else:
 			self.assert_(self.token.value == '=', "Expected equals")
@@ -778,6 +842,8 @@ class Parser:
 
 		if self.token.value != ')':
 			func.args.append(self.parse_expression())
+			print(self.token)
+			# self.consume_token()
 			while self.token.value == ',':
 				self.consume_token()
 				func.args.append(self.parse_expression())
@@ -789,17 +855,245 @@ class Parser:
 
 	@_wrap
 	def parse_expression(self) -> ASTExpression:
-		assert False, "Expressions are not yet implemented"
+		# This can be:
+		# - a variable reference
+		# - a literal
+		# - a function call
+		# - a operation
+		# - a parenthesized expression
+		# - raw assembly
+		# - `A` register query
+		# - a literal array
+
+		if self.token_view[1].type == TokenType.MEMBER_SELECT:
+			print("???")
+			self.parse_member_select()
+			print(self.token)
+
+		a: ASTExpression | None = None
+
+		if self.token_view[1].type == TokenType.PAREN_OPEN:
+			self.parse_func_call()
+			a = self.head.children.pop()  # type:ignore
+
+		if self.token.type in {TokenType.IDENTIFIER, TokenType.MEMORY_MODIFIER}:
+			a = self.parse_var_ref()
+
+		if self.token.type == TokenType.BRACKET_OPEN:
+			a = self.parse_literal_array()
+
+		if self.token.type == TokenType.NUMBER:
+			a = self.parse_number()
+
+		if self.token.type == TokenType.STRING:
+			a = self.parse_string()
+
+		if self.token.type == TokenType.KEYWORD \
+			and self.token.value == '_getValueOfA_':
+			a = self.parse_getValueOfA()
+
+		if self.token.type == TokenType.KEYWORD and self.token.value == '_asm_':
+			self.parse_raw_asm()
+			a = self.head.children.pop()  # type:ignore
+
+		# if self.token.type == TokenType.PAREN_CLOSE:
+		# 	assert False, "Unexpected closing parenthesis"
+
+		if self.token.type == TokenType.PAREN_OPEN:
+			self.consume_token()
+			a = self.parse_expression()
+			if a is None:
+				# enter a replacement for the empty expression
+				a = ASTExpression(pos=self.token.pos)
+			if self.assert_(self.token.value == ')', "Expected closing parenthesis"):
+				self.consume_token()
+
+		if a is None:
+			assert False, "Expected expression"
+
+		while self.token_view[1].type == TokenType.OPERATOR:
+			print("+-")
+			op = self.token.value
+			self.consume_token()
+			b = self.parse_expression()
+			a = Operation(pos=a.pos, op=op, left=a, right=b)
+
+		return a
+
+	@_wrap
+	def parse_getValueOfA(self):
+		self.consume_token()
+		if self.token.type == TokenType.PAREN_OPEN:
+			self.consume_token()
+			self.assert_(self.token.value == ')', "Expected closing parenthesis")
+			self.consume_token()
+		return GetValueOfA(pos=self.token.pos)
+
+	@_wrap
+	def parse_raw_asm(self):
+		self.consume_token()
+		if paren := self.token.type == TokenType.PAREN_OPEN:
+			self.consume_token()
+
+		# we expect expressions separated by commas
+		asm = RawASM(self.token.pos,[])
+
+		consumer = self.consumer()
+		while next(consumer):
+			if paren and self.token.value == ')':
+				self.consume_token()
+				break
+			asm.arguments.append(self.parse_expression())
+			if self.token.value != ',':
+				if paren and self.token.value == ')':
+					self.consume_token()
+					break
+				self.assert_(not paren, "Expected closing parenthesis or comma")
+				break
+		else:
+			self.assert_(not paren, "Expected closing parenthesis")
+
+		self.head.children.append(asm)
+
+	@_wrap
+	def parse_var_ref(self):
+		memory_descriptor = ""
+		while self.token.type == TokenType.OPERATOR:
+			memory_descriptor = self.token.value
+			self.consume_token()
+		var = Var(pos=self.token.pos, name=self.token.value,
+			memory_specifier=memory_descriptor)
+		self.consume_token()
+		return var
+
+	@_wrap
+	def parse_number(self):
+		num = Literal(pos=self.token.pos, value=self.token.value)
+		self.consume_token()
+		return num
+
+	@_wrap
+	def parse_string(self):
+		string = Literal(pos=self.token.pos, value=self.token.value)
+		self.consume_token()
+		return string
 
 	@_wrap
 	def parse_member_select(self):
 		assert self.token.type == TokenType.IDENTIFIER, "Expected namespace name"
-		while self.token_view[2].type == TokenType.MEMBER_SELECT:
+		while self.token_view[1].type == TokenType.MEMBER_SELECT:
 			assert self.token_view[2].type == TokenType.IDENTIFIER,\
 				"Expected member name"
 			self.token.value += f"::{self.token_view[2].value}"
-			del self.token_view[1]
 			del self.token_view[2]
+			del self.token_view[1]
+
+	@_wrap
+	def parse_literal_array(self):
+		self.consume_token()
+		array = LiteralArray(pos=self.token.pos, values=[])
+		while self.token.value != '}':
+			array.values.append(self.parse_expression())
+			if self.token.value != ',':
+				self.assert_(self.token.value == '}', "Expected closing bracket")
+				break
+			self.consume_token()
+		self.consume_token()
+		return array
+
+	@_wrap
+	def parse_return(self):
+		self.consume_token()
+		if self.token.type == TokenType.SEMICOLON:
+			self.head.children.append(Return(pos=self.token.pos,
+				value=None))
+			return
+		self.head.children.append(Return(pos=self.token.pos,
+			value=self.parse_expression()))
+
+	@_wrap
+	def parse_if(self):
+		self.consume_token()
+		if_ = If(pos=self.token.pos, condition=None, children=[])
+		assert self.token.value == '(', "Expected opening parenthesis"
+		self.consume_token()
+		if_.condition = self.parse_expression()
+		assert self.token.value == ')', "Expected closing parenthesis"
+		self.consume_token()
+		self.stack.append(if_)
+
+		if self.token.value == '{':
+			self.consume_token()
+			while self.token.value != '}':
+				self.parse_statement()
+				self.consume_token()
+			assert self.token.value == '}', "Expected closing bracket "
+
+		else:
+			self.parse_statement()
+		self.stack.pop()
+
+		self.head.children.append(if_)
+
+	@_wrap
+	def parse_while(self):
+		self.consume_token()
+		while_ = While(pos=self.token.pos, condition=None, children=[])
+		assert self.token.value == '(', "Expected opening parenthesis"
+		self.consume_token()
+		while_.condition = self.parse_expression()
+		assert self.token.value == ')', "Expected closing parenthesis"
+		self.consume_token()
+		self.stack.append(while_)
+		if self.token.value == '{':
+			self.consume_token()
+			while self.token.value != '}':
+				self.parse_statement()
+				self.consume_token()
+			assert self.token.value == '}', "Expected closing bracket "
+		else:
+			self.parse_statement()
+		self.stack.pop()
+
+		self.head.children.append(while_)
+
+	@_wrap
+	def parse_for(self):
+		self.consume_token()
+		for_ = For(self.token.pos, [], "<UNNAMED>",None,None,None)
+		assert self.token.value == '(', "Expected opening parenthesis"
+		self.consume_token()
+		assert self.token.type == TokenType.IDENTIFIER, "Expected identifier"
+		for_.var = self.token.value
+		self.consume_token()
+		assert self.token.value == 'from', "Expected 'from'"
+		self.consume_token()
+		for_.start = self.parse_expression()
+		# self.consume_token()
+		assert self.token.value == 'to', "Expected 'to'"
+		self.consume_token()
+		for_.end = self.parse_expression()
+		# self.consume_token()
+		if self.token.value == 'by':
+			self.consume_token()
+			for_.step = self.parse_expression()
+			self.parse_statement()
+		assert self.token.value == ')', "Expected closing parenthesis"
+		self.consume_token()
+		self.stack.append(for_)
+
+		if self.token.value == '{':
+			self.consume_token()
+			while self.token.value != '}':
+				self.parse_statement()
+				self.consume_token()
+			assert self.token.value == '}', "Expected closing bracket "
+
+		else:
+			self.parse_statement()
+		self.stack.pop()
+
+		self.head.children.append(for_)
 
 
 # wrapper around Parser.parse()

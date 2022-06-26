@@ -4,11 +4,19 @@ This is a python implementation of both the SCPP compiler and the SCPP vm. See [
 
 ## Non spec behavior
 
-- variables can be defined as references to other variables.
+- you can access and edit addresses of variables.
 
         var a = 1;
-        var &b = &a;
+        var $b = $a;
         b = 2;
+        print(a); // 2
+
+- multi layer pointers are supported.
+
+        var a = 1;
+        var b = $a;
+        var c = $b;
+        ~~~c = 2;
         print(a); // 2
 
 - functions may be inline
@@ -40,12 +48,19 @@ This is a python implementation of both the SCPP compiler and the SCPP vm. See [
 
 - namespaces can be placed in namespaces, can be public or private and can have a default access descriptor.
 
-        namespace foo { // public, default access is public
-            namespace private bar { // public
-                public namespace baz { // public, inherits default access from bar
-                    var a; // private
+        namespace foo { // public, default access is private
+            namespace public bar { // public
+                private namespace baz { // public, inherits default access from bar
+                    var a; // public
                 }
-                var b; // private
+                var b; // public
             }
-            var c // public
+            var c // private
         }
+
+- Arrays exist lol
+
+        var a[10];
+        a[2] = 3;
+
+    No idea why this was cut from spec tbh

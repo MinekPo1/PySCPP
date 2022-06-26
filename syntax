@@ -45,14 +45,22 @@ expr ->
 	| raw_asm
 	| a_reg
 	| literal
+	| memory_desc expr
 	| '(' expr ')'
 
-var_ref -> selector? memory_desc :name
+literal ->
+	  :number
+	| :string
+	| literal_array
 
-selector -> :name '::'
+literal_array -> '{' (expr (',' expr)*)? '}'
+
+var_ref -> memory_desc selector? :name
+
+selector -> (:name '::')+
 
 operation -> expr :operator expr
 
 a_reg -> '_getValueOfA_' '()'?
 
-memory_desc -> ('*' | '&')*
+memory_desc -> ('~'+ | '$')?
