@@ -1,10 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, TypeAlias, TypeVar
+from typing import Any, Callable, Type, TypeAlias, TypeVar
 from re import compile as rec
+from pathlib import Path
 
 Pos: TypeAlias = tuple[int, int, str]
+
+
+INCLUDE_PATH = Path(__file__).parent.parent / "lib"
 
 
 @dataclass
@@ -240,137 +244,125 @@ def tokenize(code: str, source: str) -> list[Token]:
 	return tokens
 
 
-@dataclass
-class ASTElement:
-	pos: Pos
+class AST:
+	@dataclass
+	class ASTElement:
+		pos: Pos
 
+	class ASTExpression(ASTElement):
+		pass
 
-class ASTExpression(ASTElement):
-	pass
+	@dataclass
+	class Container(ASTElement):
+		children: list[AST.ASTElement]
 
+	@dataclass
+	class Accessible(ASTElement):
+		name: str
+		private: bool | None = field(default=None, init=False)
 
-@dataclass
-class Container(ASTElement):
-	children: list[ASTElement]
+	@dataclass
+	class Root(Container):
+		includes: list[AST.Include]
+		definitions: list[AST.Definition]
 
+	@dataclass
+	class Preprocessor(ASTElement):
+		value: str
 
-@dataclass
-class Accessible(ASTElement):
-	name: str
-	private: bool | None = field(default=None, init=False)
+	@dataclass
+	class TokenElement(ASTElement):
+		token: Token
 
+	@dataclass
+	class Namespace(Accessible,Container):
+		default_private: bool | None = None
 
-@dataclass
-class Root(Container):
-	includes: list[str]
-	definitions: dict[str,str]
+	@dataclass
+	class If(Container):
+		condition: AST.ASTExpression
 
+	@dataclass
+	class While(Container):
+		condition: AST.ASTExpression
 
-@dataclass
-class Preprocessor(ASTElement):
-	value: str
+	@dataclass
+	class For(Container):
+		var: str
+		start: AST.ASTExpression
+		end: AST.ASTExpression
+		step: AST.ASTExpression | None
 
+	@dataclass
+	class VarDef(ASTElement):
+		var: AST.Var
+		value: AST.ASTExpression | None
+		private: bool | None = None
+		offset: AST.ASTExpression | None = None
 
-@dataclass
-class TokenElement(ASTElement):
-	token: Token
+	@dataclass
+	class Return(ASTElement):
+		value: AST.ASTExpression | None
 
+	@dataclass
+	class ASM(ASTElement):
+		exprs: list[AST.ASTExpression]
 
-@dataclass
-class Namespace(Accessible,Container):
-	default_private: bool | None = None
+	@dataclass
+	class FuncDef(Accessible, Container):
+		args: list[AST.Var]
 
+	@dataclass
+	class Var(ASTExpression):
+		name: str
+		memory_specifier: str | None = None
 
-@dataclass
-class If(Container):
-	condition: ASTExpression
+	@dataclass
+	class VarSet(ASTElement):
+		l_value: AST.Var | AST.ASTExpression
+		value: AST.ASTExpression
+		offset: AST.ASTExpression | None = None
+		modifier: str | None = None
 
+	@dataclass
+	class MemoryModifier(ASTExpression):
+		modifier: str
+		value: AST.ASTExpression
 
-@dataclass
-class While(Container):
-	condition: ASTExpression
+	@dataclass
+	class FuncCall(ASTExpression):
+		name: str
+		args: list[AST.ASTExpression]
 
+	@dataclass
+	class Operation(ASTExpression):
+		op: str
+		left: AST.ASTExpression
+		right: AST.ASTExpression
 
-@dataclass
-class For(Container):
-	var: str
-	start: ASTExpression
-	end: ASTExpression
-	step: ASTExpression | None
+	class GetValueOfA(ASTExpression):
+		pass
 
+	@dataclass
+	class RawASM(ASTExpression):
+		arguments: list[AST.ASTExpression]
 
-@dataclass
-class VarDef(ASTElement):
-	var: Var
-	value: ASTExpression | None
-	private: bool | None = None
-	offset: ASTExpression | None = None
+	@dataclass
+	class Literal(ASTExpression):
+		value: str | int
 
+	@dataclass
+	class LiteralArray(ASTExpression):
+		values: list[AST.ASTExpression]
 
-@dataclass
-class Return(ASTElement):
-	value: ASTExpression | None
+	@dataclass
+	class Include(ASTElement):
+		value: str
 
-
-@dataclass
-class ASM(ASTElement):
-	exprs: list[ASTExpression]
-
-
-@dataclass
-class FuncDef(Accessible, Container):
-	args: list[Var]
-
-
-@dataclass
-class Var(ASTExpression):
-	name: str
-	memory_specifier: str | None = None
-
-
-@dataclass
-class VarSet(ASTElement):
-	l_value: Var | ASTExpression
-	value: ASTExpression
-	offset: ASTExpression | None = None
-	modifier: str | None = None
-
-
-@dataclass
-class MemoryModifier(ASTExpression):
-	modifier: str
-	value: ASTExpression
-
-@dataclass
-class FuncCall(ASTExpression):
-	name: str
-	args: list[ASTExpression]
-
-
-@dataclass
-class Operation(ASTExpression):
-	op: str
-	left: ASTExpression
-	right: ASTExpression
-
-
-class GetValueOfA(ASTExpression):
-	pass
-
-
-@dataclass
-class RawASM(ASTExpression):
-	arguments: list[ASTExpression]
-
-
-@dataclass
-class Literal(ASTExpression):
-	value: str | int
-
-
-@dataclass
-class LiteralArray(ASTExpression):
-	values: list[ASTExpression]
+	@dataclass
+	class Definition(ASTElement):
+		name: str
+		value: str
 
 
 T = TypeVar('T')
@@ -403,18 +395,18 @@ class Parser:
 	tokens: list[Token]
 	tokens_i = 0
 	errors: list[Error]
-	stack: list[Container]
-	root: Root
+	stack: list[AST.Container]
+	root: AST.Root
 
 	def __init__(
 			self,
-			tokens: list[Token], source: str, root: Root | None = None
+			tokens: list[Token], source: str, root: AST.Root | None = None
 		):
 		self.tokens = tokens
 		self.errors = []
 		if root is None:
-			self.root = Root(
-				includes=[], definitions={}, pos=(0, 0, source), children=[]
+			self.root = AST.Root(
+				includes=[], definitions=[], pos=(0, 0, source), children=[]
 			)
 		else:
 			self.root = root
@@ -504,14 +496,22 @@ class Parser:
 
 		if self.token.value.startswith("#include"):
 			# place the include in the root
-			assert isinstance(self.container, Root), "#include must be in root"
-			self.root.includes.append(self.token.value.removeprefix("#include "))
+			assert isinstance(self.container, AST.Root), "#include must be in root"
+			self.root.includes.append(
+				AST.Include(self.token.pos,self.token.value.removeprefix("#include "))
+			)
 			return
 
 		if self.token.value.startswith("#define"):
 			# place the define in the root
-			assert isinstance(self.container, Root), "#define must be in root"
-			self.root.definitions[self.token.value.removeprefix("#define ")] = ""
+			assert isinstance(self.container, AST.Root), "#define must be in root"
+			self.root.definitions.append(
+				AST.Definition(
+					self.token.pos,self.token.value.split()[1],
+					" ".join(self.token.value.split()[2:])
+				)
+			)
+
 			return
 
 		# if we get here, we have a preprocessor
@@ -529,7 +529,7 @@ class Parser:
 
 		# create the namespace
 		# we will update it as we go
-		namespace = Namespace(
+		namespace = AST.Namespace(
 			pos=self.token.pos,
 			name="<UNNAMED>",
 			children=[],
@@ -588,7 +588,7 @@ class Parser:
 
 		# construct the function
 		# we will update it as we go
-		func = FuncDef(
+		func = AST.FuncDef(
 			pos=self.token.pos,
 			name="<UNNAMED>",
 			children=[],
@@ -623,7 +623,7 @@ class Parser:
 				continue
 
 			if self.token.type == TokenType.IDENTIFIER:
-				func.args.append(Var(
+				func.args.append(AST.Var(
 					pos=self.token.pos,
 					name=self.token.value,
 					memory_specifier=memory_specifier,
@@ -720,9 +720,9 @@ class Parser:
 	def parse_var_def(self):
 		# construct the variable
 		# we will update it as we go
-		var = VarDef(
+		var = AST.VarDef(
 			pos=self.token.pos,
-			var=Var(
+			var=AST.Var(
 				pos=self.token.pos,
 				name="<UNNAMED>"
 			),
@@ -757,16 +757,16 @@ class Parser:
 			self.consume_token()
 			var.value = self.parse_expression()
 
-		self.consume_token()
+		# self.consume_token()
 		self.assert_(self.token.value == ';', "Expected semicolon")
 
 		self.head.children.append(var)
 
 	@_wrap
 	def parse_var_assignment(self):
-		var = VarSet(
+		var = AST.VarSet(
 			pos=self.token.pos,
-			l_value=Var(
+			l_value=AST.Var(
 				pos=self.token.pos,
 				name="<UNNAMED>"
 			),
@@ -781,7 +781,7 @@ class Parser:
 			expr = self.parse_expression()
 			self.assert_(self.token.value == ')', "Expected closing parenthesis")
 			if var.l_value.memory_specifier:  # type:ignore
-				var.l_value = MemoryModifier(
+				var.l_value = AST.MemoryModifier(
 					self.token.pos,
 					var.l_value.memory_specifier,  # type:ignore
 					expr
@@ -814,21 +814,21 @@ class Parser:
 		if self.token.type == TokenType.MODIFIER:
 			var.modifier = self.token.value
 			self.consume_token()
-			var.value = Literal(var.pos, 1)
+			var.value = AST.Literal(var.pos, 1)
 
 		else:
 			self.assert_(self.token.value == '=', "Expected equals")
 			self.consume_token()
 			var.value = self.parse_expression()
 
-		self.consume_token()
+		# self.consume_token()
 		self.assert_(self.token.value == ';', "Expected semicolon")
 
 		self.head.children.append(var)
 
 	@_wrap
 	def parse_func_call(self):
-		func = FuncCall(
+		func = AST.FuncCall(
 			pos=self.token.pos,
 			name="<UNNAMED>",
 			args=[],
@@ -854,7 +854,7 @@ class Parser:
 		self.head.children.append(func)
 
 	@_wrap
-	def parse_expression(self) -> ASTExpression:
+	def parse_expression(self) -> AST.ASTExpression:
 		# This can be:
 		# - a variable reference
 		# - a literal
@@ -870,7 +870,7 @@ class Parser:
 			self.parse_member_select()
 			print(self.token)
 
-		a: ASTExpression | None = None
+		a: AST.ASTExpression | None = None
 
 		if self.token_view[1].type == TokenType.PAREN_OPEN:
 			self.parse_func_call()
@@ -904,19 +904,21 @@ class Parser:
 			a = self.parse_expression()
 			if a is None:
 				# enter a replacement for the empty expression
-				a = ASTExpression(pos=self.token.pos)
+				a = AST.ASTExpression(pos=self.token.pos)
 			if self.assert_(self.token.value == ')', "Expected closing parenthesis"):
 				self.consume_token()
 
 		if a is None:
 			assert False, "Expected expression"
 
-		while self.token_view[1].type == TokenType.OPERATOR:
+		# print(self.token,self.token_view[1])
+
+		while self.token.type == TokenType.OPERATOR:
 			print("+-")
 			op = self.token.value
 			self.consume_token()
 			b = self.parse_expression()
-			a = Operation(pos=a.pos, op=op, left=a, right=b)
+			a = AST.Operation(pos=a.pos, op=op, left=a, right=b)
 
 		return a
 
@@ -927,7 +929,7 @@ class Parser:
 			self.consume_token()
 			self.assert_(self.token.value == ')', "Expected closing parenthesis")
 			self.consume_token()
-		return GetValueOfA(pos=self.token.pos)
+		return AST.GetValueOfA(pos=self.token.pos)
 
 	@_wrap
 	def parse_raw_asm(self):
@@ -936,7 +938,7 @@ class Parser:
 			self.consume_token()
 
 		# we expect expressions separated by commas
-		asm = RawASM(self.token.pos,[])
+		asm = AST.RawASM(self.token.pos,[])
 
 		consumer = self.consumer()
 		while next(consumer):
@@ -961,20 +963,20 @@ class Parser:
 		while self.token.type == TokenType.OPERATOR:
 			memory_descriptor = self.token.value
 			self.consume_token()
-		var = Var(pos=self.token.pos, name=self.token.value,
+		var = AST.Var(pos=self.token.pos, name=self.token.value,
 			memory_specifier=memory_descriptor)
 		self.consume_token()
 		return var
 
 	@_wrap
 	def parse_number(self):
-		num = Literal(pos=self.token.pos, value=self.token.value)
+		num = AST.Literal(pos=self.token.pos, value=self.token.value)
 		self.consume_token()
 		return num
 
 	@_wrap
 	def parse_string(self):
-		string = Literal(pos=self.token.pos, value=self.token.value)
+		string = AST.Literal(pos=self.token.pos, value=self.token.value)
 		self.consume_token()
 		return string
 
@@ -991,7 +993,7 @@ class Parser:
 	@_wrap
 	def parse_literal_array(self):
 		self.consume_token()
-		array = LiteralArray(pos=self.token.pos, values=[])
+		array = AST.LiteralArray(pos=self.token.pos, values=[])
 		while self.token.value != '}':
 			array.values.append(self.parse_expression())
 			if self.token.value != ',':
@@ -1005,16 +1007,16 @@ class Parser:
 	def parse_return(self):
 		self.consume_token()
 		if self.token.type == TokenType.SEMICOLON:
-			self.head.children.append(Return(pos=self.token.pos,
+			self.head.children.append(AST.Return(pos=self.token.pos,
 				value=None))
 			return
-		self.head.children.append(Return(pos=self.token.pos,
+		self.head.children.append(AST.Return(pos=self.token.pos,
 			value=self.parse_expression()))
 
 	@_wrap
 	def parse_if(self):
 		self.consume_token()
-		if_ = If(pos=self.token.pos, condition=None, children=[])
+		if_ = AST.If(pos=self.token.pos, condition=None, children=[])  # type:ignore
 		assert self.token.value == '(', "Expected opening parenthesis"
 		self.consume_token()
 		if_.condition = self.parse_expression()
@@ -1038,7 +1040,8 @@ class Parser:
 	@_wrap
 	def parse_while(self):
 		self.consume_token()
-		while_ = While(pos=self.token.pos, condition=None, children=[])
+		while_ = AST.While(
+			pos=self.token.pos, condition=None, children=[])  # type:ignore
 		assert self.token.value == '(', "Expected opening parenthesis"
 		self.consume_token()
 		while_.condition = self.parse_expression()
@@ -1060,7 +1063,7 @@ class Parser:
 	@_wrap
 	def parse_for(self):
 		self.consume_token()
-		for_ = For(self.token.pos, [], "<UNNAMED>",None,None,None)
+		for_ = AST.For(self.token.pos, [], "<UNNAMED>",None,None,None)  # type:ignore
 		assert self.token.value == '(', "Expected opening parenthesis"
 		self.consume_token()
 		assert self.token.type == TokenType.IDENTIFIER, "Expected identifier"
@@ -1097,8 +1100,252 @@ class Parser:
 
 
 # wrapper around Parser.parse()
-def parse(tokens: list[Token]) -> tuple[Root,list[Error]]:
+def parse(tokens: list[Token]) -> tuple[AST.Root,list[Error]]:
 	parser = Parser(tokens, tokens[0].pos[2])
 	parser.parse()
 
 	return parser.root, parser.errors
+
+
+@dataclass
+class ScannedFunction:
+	implementations: dict[int, AST.FuncDef]
+
+
+TE = TypeVar('TE', bound=AST.ASTElement)
+
+
+def _wrapS(func: Callable[[Scanner, TE],T])\
+		-> Callable[[Scanner, TE],T]:
+	def wrapper(self: Scanner, elm: TE) -> T:
+		try:
+			return func(self, elm)
+		except AssertionError as e:
+			error = Error(pos=elm.pos, message=str(e))
+			for i in self.namespace_stack:
+				error.stack.append(i[1])
+			self.errors.append(error)
+			return None  # type:ignore
+	return wrapper
+
+
+def _add(type: Type[TE])\
+	-> Callable[[Callable[[Scanner, TE],T]],Callable[[Scanner, TE],T]]:
+	def wrapper(func: Callable[[Scanner, TE],T])\
+		-> Callable[[Scanner, TE],T]:
+		Scanner.auto[type] = func
+		return func
+	return wrapper
+
+
+class Scanner:
+	private_ns: dict[str,dict[str, AST.VarDef | ScannedFunction | None]]
+	namespaces: dict[str,tuple[dict[str, AST.VarDef | ScannedFunction | None],Pos]]
+	to_be_checked: dict[str,AST.FuncDef]
+	remote: bool
+	errors: list[Error]
+	namespace_stack: list[tuple[str,Pos]]
+	definitions: dict[str, str]
+	accessed: dict[str, int]
+
+	auto: dict[Type[AST.ASTElement], Callable[[Scanner, Any], Any]]
+
+	class Namespace:
+		def __init__(self, scanner: Scanner, elm_or_pos: AST.Container, name: str,\
+			override: bool = False):
+			self.name = name
+			if isinstance(elm_or_pos, AST.Container):
+				self.pos = elm_or_pos.pos
+			else:
+				self.pos = elm_or_pos
+			self.scanner = scanner
+			self.override = override
+
+		def __enter__(self):
+			if self.override:
+				self.old_ns = self.scanner.namespace_stack
+				self.scanner.namespace_stack = [(self.name,self.pos)]
+			else:
+				self.scanner.namespace_stack.append((self.name,self.pos))
+
+		def __exit__(self, exc_type, exc_val, exc_tb):
+			if self.override:
+				self.scanner.namespace_stack = self.old_ns
+			else:
+				self.scanner.namespace_stack.pop()
+
+	def __init__(self, tree: AST.Root):
+		self.tree = tree
+		self.errors = []
+		self.namespaces = {"":({},tree.pos)}
+		self.namespace_stack = []
+		self.to_be_checked = {}
+		self.remote = False
+		self.namespace_pos_cache = {}
+
+	@property
+	def namespace(self) -> str:
+		return "::".join([i[0] for i in self.namespace_stack])
+
+	def scan(self):
+		self.scan_root(self.tree)
+		return self.errors
+
+	def get(self, name: str) -> AST.VarDef | ScannedFunction | dict:
+		if name.split("::")[0] in self.private_ns[self.namespace] or \:
+			# get from private namespace
+			c = self.private_ns[self.namespace]
+			ns = self.namespace
+			for i in name.split("::")[1:]:
+				assert not isinstance(c, AST.VarDef), "Cannot access member of a variable"
+				assert not isinstance(c, ScannedFunction), "Cannot access member of a Function"
+				assert i in c, f"Cannot find member '{i}' in namespace"
+
+
+
+
+
+	@_add(AST.Root)
+	@_wrapS
+	def scan_root(self, root: AST.Root):
+		remote = self.remote
+		self.remote = False
+		for include in root.includes:
+			self.scan_include(include)
+		for definition in root.definitions:
+			self.scan_definition(definition)
+		self.remote = remote
+		self.scan_container(root)
+
+	@_wrapS
+	def scan_include(self, include: AST.Include):
+		# locate the file
+		include_val = include.value
+		if include_val[0] == "<" and include_val[-1] == ">":
+			include_val = include_val[1:-1]
+			path = INCLUDE_PATH / f"{include_val}.sc"
+			assert path.exists(), f"Unable to locate library <{include_val}>"
+		elif include_val[0] == "\"" and include_val[-1] == "\"":
+			include_val = include_val[1:-1]
+			path = Path() / include_val
+			assert path.exists(), f"Unable to locate file \"{include_val}\""
+		else:
+			raise AssertionError(f"Invalid include: {include_val}")
+
+		# parse the file
+		with path.open() as f:
+			tokens = tokenize(f.read(),str(path))
+			root, errors = parse(tokens)
+			for error in errors:
+				error.stack.insert(0,include.pos)
+			self.errors.extend(errors)
+			if root is not None:
+				self.scan_root(root)
+
+	@_wrapS
+	def scan_definition(self, definition: AST.Definition):
+		assert definition.name not in self.definitions,\
+			f"Duplicate definition of {definition.name}"
+
+	def scan_auto(self, elm: AST.ASTElement):
+		assert elm.__class__ in self.auto, f"No auto-scanner for {elm.__class__}"
+		return self.auto[elm.__class__](self, elm)
+
+	def scan_container(self, elm: AST.Container):
+		for child in elm.children:
+			self.scan_auto(child)
+
+	@_add(AST.FuncDef)
+	@_wrapS
+	def scan_function(self, func: AST.FuncDef):
+		if func.name in self.namespaces[self.namespace]:
+			func_obj = self.namespaces[self.namespace][func.name]
+			assert isinstance(func_obj, ScannedFunction),\
+				f"Namespace collision: {func.name}"
+		else:
+			func_obj = ScannedFunction(implementations={})
+			self.namespaces[self.namespace][0][func.name] = func_obj
+
+		assert len(func.args) not in func_obj.implementations, \
+			f"Duplicate implementation for {func.name}(\
+				{', '.join(arg.name for arg in func.args)})"
+
+		self.namespaces[f"{self.namespace}::Func:{func.name}:{len(func.args)}"] = ({},func.pos)
+
+		func_obj.implementations[len(func.args)] = func
+		if self.remote:
+			self.to_be_checked[f"{func.name}:{len(func.args)}"] = func
+		else:
+			with self.Namespace(self, func, f"Func:{func.name}:{len(func.args)}"):
+				self.scan_container(func)
+
+	@_add(Namespace)  # type: ignore
+	@_wrapS  # type: ignore
+	def scan_namespace(self, namespace: Namespace):
+		if namespace.name in self.namespaces:
+			raise AssertionError(f"Duplicate namespace {namespace.name}")
+		self.namespaces[f"{self.namespace}::{namespace.name}"] = ({},namespace.pos)
+		with self.Namespace(self, namespace, namespace.name):  # type: ignore
+			self.scan_container(namespace)  # type: ignore
+
+	@_add(AST.VarDef)
+	@_wrapS
+	def scan_variable(self, var: AST.VarDef):
+		if var.var.name in self.namespaces[self.namespace]:
+			raise AssertionError(f"Duplicate variable {var.var.name}")
+		self.namespaces[self.namespace][0][var.var.name] = var
+
+	@_add(AST.FuncCall)
+	@_wrapS
+	def scan_call(self, call: AST.FuncCall):
+		id_str = f"{self.namespace}::{call.name}({len(call.args)})"
+		if id_str in self.accessed:
+			self.accessed[id_str] += 1
+		else:
+			self.accessed[id_str] = 1
+		if id_str in self.to_be_checked:
+			# set namespace to the function's namespace
+			with self.Namespace(self, self.namespaces[id_str], id_str, False):
+				self.scan_container(self.to_be_checked[id_str])
+		call.name = id_str
+
+	@_add(AST.VarSet)
+	@_wrapS
+	def scan_set(self, set: AST.VarSet):
+		self.scan_auto(set.l_value)
+		if set.offset is not None:
+			self.scan_auto(set.offset)
+		self.scan_auto(set.value)
+
+	@_add(AST.Var)
+	@_wrapS
+	def scan_var(self, var: AST.Var):
+		if "::" not in var.name:
+			var.name = f"{self.namespace}::{var.name}"
+		if var.name in self.accessed:
+			self.accessed[var.name] += 1
+		else:
+			self.accessed[var.name] = 1
+
+	@_add(AST.If)
+	@_wrapS
+	def scan_if(self, if_: AST.If):
+		self.scan_auto(if_.condition)
+		self.scan_container(if_)
+
+	@_add(AST.While)
+	@_wrapS
+	def scan_while(self, while_: AST.While):
+		self.scan_auto(while_.condition)
+		self.scan_container(while_)
+
+	@_add(AST.For)
+	@_wrapS
+	def scan_for(self, for_: AST.For):
+		self.scan_auto(for_.start)
+		self.scan_auto(for_.end)
+		if for_.step is not None:
+			self.scan_auto(for_.step)
+		# define the variable
+
+		self.scan_container(for_)
