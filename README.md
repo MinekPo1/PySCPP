@@ -1,6 +1,16 @@
 # PySCPP
 
-This is a python implementation of both the SCPP compiler and the SCPP vm. See [here for SCPP spec](https://www.github.com/Its-Jakey/SCPP).
+This is a python implementation of both the SCPP compiler and the SLVM. See [here for SCPP and SLVM spec](https://www.github.com/Its-Jakey/SCPP).
+
+Note: This is a work in progress.
+
+Progress:
+
+- 🟠 Compiler
+  - 🟢 Parser & Lexer
+  - 🟠 Code optimization
+  - ⚫ Assembly
+- ⚫ VM
 
 ## Non spec behavior
 
@@ -57,10 +67,3 @@ This is a python implementation of both the SCPP compiler and the SCPP vm. See [
             }
             var c // private
         }
-
-- Arrays exist lol
-
-        var a[10];
-        a[2] = 3;
-
-    No idea why this was cut from spec tbh
