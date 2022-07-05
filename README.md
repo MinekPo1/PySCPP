@@ -10,7 +10,9 @@ Progress:
   - 🟢 Parser & Lexer
   - 🟠 Code optimization
   - ⚫ Assembly
-- ⚫ VM
+- 🟠 VM
+  - 🟢 instructions
+  - ⚫ graphics
 
 ## Non spec behavior
 
