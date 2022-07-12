@@ -6,19 +6,35 @@ import pygame
 import time
 
 
-def _wrap(instruction: str) -> Callable[[Callable], Callable]:
-	def wrapper(func: Callable) -> Callable:
-		SLVM.instructions[instruction] = func
-		return func
-	return wrapper
-
-
 _WT = TypeVar('_WT', float, str)
 
 
+class _Wrapper:
+	instructions: dict[str, Callable]
+
+	def __init__(self):
+		self.instructions = {}
+
+	def __call__(self,instruction: str) -> Callable[[Callable], Callable]:
+		def wrapper(func: Callable) -> Callable:
+			self.instructions[instruction] = func
+			return func
+		return wrapper
+
+
 class SLVM:
+	"""
+		This class implements the vm.
+
+		Use by iterating over the instance or with the :py:meth:`run` method.
+
+		:param code: The code to run. Can be a string or a list of strings.
+			If a string, it will be split on newlines.
+
+
+	"""
 	class _Memory:
-		class _Wrapper(Generic[_WT]):
+		class _MemWrapper(Generic[_WT]):
 			mem: SLVM._Memory
 			is_float: bool
 
@@ -55,8 +71,8 @@ class SLVM:
 				self.mem._raw[index] = value
 
 		_raw: list[str | float]
-		floats: _Wrapper[float]
-		strings: _Wrapper[str]
+		floats: _MemWrapper[float]
+		strings: _MemWrapper[str]
 
 		def __init__(self) -> None:
 			self._raw = []
@@ -89,9 +105,12 @@ class SLVM:
 	_array_sizes: list[int]
 
 	console: IO[str]
+	"The io object the VM writes/reads to/from. Default is a StringIO object."
 
-	instructions: dict[str, Callable] = {}
+	_wrap = _Wrapper()
+
 	MAX_MEMORY_SIZE = 65536
+	"How large the memory is. Override this to change the size of the memory."
 
 	def __init__(self, code: list[str] | str):
 		if isinstance(code, str):
@@ -157,10 +176,17 @@ class SLVM:
 		i = self._get_next()
 		if i is None:
 			raise StopIteration()
-		if i not in self.instructions:
+		if i not in self._wrap.instructions:
 			self._running = False
 			raise ValueError(f"Unknown instruction: {i}")
-		self.instructions[i]()
+		self._wrap.instructions[i]()
+
+	def run(self) -> None:
+		"""
+			Exhausts the object by repeatedly calling ``next`` on it.
+		"""
+		while self._running:
+			next(self)
 
 	def _allocate(self, size: int) -> int:
 		if self._free_chunks:

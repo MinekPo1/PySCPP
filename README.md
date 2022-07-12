@@ -16,6 +16,14 @@ Progress:
 
 ## Non spec behavior
 
+### Not supported features
+
+- main function being called
+
+    If you need this, stop and go get some help. Touching grass is also a good idea.
+
+### Non backwards compatible features
+
 - you can access and edit addresses of variables.
 
         var a = 1;
@@ -61,7 +69,7 @@ Progress:
 - namespaces can be placed in namespaces, can be public or private and can have a default access descriptor.
 
         namespace foo { // public, default access is private
-            namespace public bar { // public
+            namespace public bar { // private
                 private namespace baz { // public, inherits default access from bar
                     var a; // public
                 }
@@ -69,3 +77,5 @@ Progress:
             }
             var c // private
         }
+
+- concatenation operator (`..`) is supported.

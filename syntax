@@ -2,7 +2,7 @@ program -> (preprocessor | namespace | func_def | statement)*
 
 preprocessor -> '#[^\n]*'
 
-namespace -> 'namespace' access_desc :name '{'(func_def | statement)*'}'
+namespace -> 'namespace' access_desc :name ('{'(func_def | statement)*'}' | 'is' :name ';')
 
 func_def -> access_desc 'inline'? 'func' :name '(' (memory_desc :name) ')' '{' statement* '}'
 
