@@ -1,8 +1,9 @@
-from sys import argv
-from pprint import pprint, pformat
-from PySCPP import compiler
+from sys import argv, stdin, stdout
+from pprint import pprint
+from PySCPP import compiler, vm
+from PySCPP.utils import display_errors
 from typing import TypedDict
-
+from glob import glob
 
 class DirtyOptions(TypedDict):
 	"""
@@ -11,8 +12,10 @@ class DirtyOptions(TypedDict):
 	input: str | None
 	tokens: bool
 	silent: bool
+	tree: bool
+	scan: bool
 	run: bool
-	out: str | None
+	out: str
 	opt: int
 
 
@@ -23,8 +26,10 @@ class Options(TypedDict):
 	input: str
 	tokens: bool
 	silent: bool
+	tree: bool
+	scan: bool
 	run: bool
-	out: str | None
+	out: str
 	opt: int
 
 
@@ -39,6 +44,8 @@ def print_help():
 	print("Options:")
 	print("    --help, -h    Show this help message and exit")
 	print("    --tokens, -t  Output tokens. Don't parse the file.")
+	print("    --tree, -T    Output the parsed tree. Don't scan the file.")
+	print("    --scan, -S    Output the scanned tree. Don't assemble the file.")
 	print("    --silent, -s  Don't print errors.")
 	print("    --run, -r     Run the created assembly.")
 	print("    --inp, -i     Where to take the code from.")
@@ -62,6 +69,12 @@ flags = {
 	"t": "tokens",
 	"--silent": "silent",
 	"s": "silent",
+	"--run": "run",
+	"r": "run",
+	"T": "tree",
+	"--tree": "tree",
+	"--scan": "scan",
+	"S": "scan",
 }
 
 multi_flags = {
@@ -76,35 +89,16 @@ options = {
 	"--input": "input",
 }
 
-
-def display_errors(errors: list[compiler.Error], code:str) -> None:
-	"""
-	It prints the error message, the line of code where the error occurred,
-	and the line of code.
-
-	@param errors
-	@param code The code that was being parsed, to take lines from
-	"""
-
-	print("Errors:")
-	lines = code.splitlines()
-	p_stack: list[compiler.Pos] = []
-	for error in errors:
-		if error.stack:
-			for i,j in zip(error.stack, p_stack):
-				if i != j:
-					print("In:")
-					print(f"{i[0]+1: >2}| ",lines[i[0]])
-			for i in error.stack[len(p_stack):]:
-				print("In:")
-				print(f"{i[0]+1: >2}| ",lines[i[0]])
-
-			p_stack = error.stack
-
-		print(error.message)
-		print(f"{error.pos[0]+1: >2}| ",lines[error.pos[0]])
-		tabs = lines[error.pos[0]][:error.pos[1]].count("\t")
-		print("   ",'\t'*tabs," "*(error.pos[1]-tabs-4),"^")
+defaults: DirtyOptions = {
+	"input": None,
+	"tokens": False,
+	"silent": False,
+	"tree": False,
+	"scan": False,
+	"run": False,
+	"out": "out.slvm.txt",
+	"opt": 0,
+}
 
 
 def parse_args() -> Options:
@@ -118,14 +112,7 @@ def parse_args() -> Options:
 	"""
 	if len(argv) == 1 or "--help" in argv or "-h" in argv:
 		print_help()
-	opts: DirtyOptions = {
-		"input": None,
-		"tokens": False,
-		"silent": False,
-		"run": False,
-		"out": None,
-		"opt": 0,
-	}
+	opts: DirtyOptions = defaults.copy()
 	for i in argv[1:]:
 		if i.startswith("--"):
 			if i in flags:
@@ -164,14 +151,17 @@ def parse_args() -> Options:
 				if i[-1] in options:
 					opts[options[i[-1]]] = v  # type:ignore
 					continue
-				print(f"Unknown option: {k}")
+				print(f"Unknown option: {v}")
 				quit(1)
 			elif i[-1] in flags:
-				opts[flags[j]] = True  # type: ignore
-			elif j in multi_flags:
-				opts[multi_flags[j]] += 1  # type: ignore
-
-
+				opts[flags[i[-1]]] = True  # type: ignore
+				continue
+			elif i[-1] in multi_flags:
+				opts[multi_flags[i[-1]]] += 1  # type: ignore
+				continue
+			else:
+				print(f"Unknown flag: {i[-1]}")
+				quit(1)
 
 		for j in arguments:
 			if opts[j] is None:
@@ -191,33 +181,52 @@ def main() -> None:
 		Main function.
 	"""
 	options = parse_args()
+	compiler.OPT = options["opt"]
 	print(options['opt'])
 	with open(options["input"], "r") as f:
 		code = f.read()
-	tokens = compiler.tokenize(code, options["input"])
-	if not options["tokens"]:
-		tree, errors = compiler.parse(tokens)
-		if errors:
-			if not options["silent"]:
-				display_errors(errors, code)
-			quit(1)
+	if options["tokens"] or options["tree"] or options["scan"]:
+		errors = show_tree_or_tokens(code, options)
+	out,errors = compiler.compile(code, options["input"])
+	if errors:
+		if not options["silent"]:
+			display_errors(errors)
+		quit(1)
+	if options["run"]:
+		class IO:
+			write = stdout.write
+			flush = stdout.flush
+			read = stdin.read
+		vm.SLVM.console = IO
+		vm.SLVM(out).run()
+		quit(1)
+	with open(options["out"], "w") as f:
+		f.write(out)
 
-		if options["out"] is None:
-			pprint(tree)
-		else:
-			with open(options["out"], "w") as f:
-				f.write(pformat(tree))
-	elif options["out"] is None:
+
+def show_tree_or_tokens(code, options):
+	tokens = compiler.tokenize(code, options["input"])
+	if options["tokens"]:
 		for token in tokens:
 			print(token.type,token.value,sep="\t")
-	else:
-		with open(options["out"], "w") as f:
-			for token in tokens:
-				f.write(str(token.type))
-				f.write("\t")
-				f.write(str(token.value))
-				f.write("\n")
+		quit(0)
+	tree, result = compiler.parse(tokens)
+	if result:
+		if not options["silent"]:
+			display_errors(result)
+		quit(1)
+	if options["tree"]:
+		pprint(tree)
+		quit(0)
+	tree, result = compiler.Scanner(tree).scan()
+	if result:
+		if not options["silent"]:
+			display_errors(result)
+		quit(1)
+	pprint(tree)
+	quit(0)
 
+	return result
 
 if __name__ == '__main__':
 	main()

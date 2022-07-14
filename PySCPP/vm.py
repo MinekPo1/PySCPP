@@ -41,18 +41,19 @@ class SLVM:
 			@overload
 			@classmethod
 			def __new__(cls, mem: SLVM._Memory, is_float: Literal[True]) \
-				-> SLVM._Memory._Wrapper[float]:
+				-> SLVM._Memory._MemWrapper[float]:
 				pass
 
 			@overload
 			@classmethod
 			def __new__(cls, mem: SLVM._Memory, is_float: Literal[False]) \
-				-> SLVM._Memory._Wrapper[str]:
+				-> SLVM._Memory._MemWrapper[str]:
 				pass
 
 			@classmethod  # type: ignore
-			def __new__(cls, mem: SLVM._Memory, is_float: bool) \
-				-> SLVM._Memory._Wrapper[_WT]:
+			def __new__(cls, mem: SLVM._Memory, is_float: bool, *args) \
+				-> SLVM._Memory._MemWrapper[_WT]:
+				print(args)
 				return super().__new__(cls)
 
 			def __init__(self, mem: SLVM._Memory, is_float: bool) -> None:
@@ -76,8 +77,8 @@ class SLVM:
 
 		def __init__(self) -> None:
 			self._raw = []
-			self.floats = self._Wrapper(self, True)
-			self.strings = self._Wrapper(self, False)
+			self.floats = self._MemWrapper(self, True)
+			self.strings = self._MemWrapper(self, False)
 
 		def __getitem__(self, index: int) -> str | float:
 			return self._raw[index]
@@ -155,15 +156,14 @@ class SLVM:
 		return self._code[self._code_ptr - 1]
 
 	def _get_next(self):
-		if self._code_ptr >= len(self._code):
-			return None
-		i = self._code[self._code_ptr]
-		self._code_ptr += 1
-		return i
+		return None if self._code_ptr >= len(self._code) else self._get_next_unsafe()
 
 	def _get_next_safe(self):
 		if self._code_ptr >= len(self._code):
 			raise StopIteration()
+		return self._get_next_unsafe()
+
+	def _get_next_unsafe(self):
 		i = self._code[self._code_ptr]
 		self._code_ptr += 1
 		return i
@@ -179,7 +179,7 @@ class SLVM:
 		if i not in self._wrap.instructions:
 			self._running = False
 			raise ValueError(f"Unknown instruction: {i}")
-		self._wrap.instructions[i]()
+		self._wrap.instructions[i](self)
 
 	def run(self) -> None:
 		"""
