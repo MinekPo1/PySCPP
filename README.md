@@ -62,7 +62,7 @@ Progress:
 
 - Arrays cannot be placed in arrays.
 
-- `_asm_` and `_getValuOfA_` are keywords instead of methods and can be used without parentheses. `_asm_` when used in a expression implicitly calls `_getValueOfA_`.
+- `_asm_` and `_getValuOfA_` are keywords instead of methods and can be used without parentheses.
 
 - functions, variables and namespaces can be explicitly made private with the `private` keyword.
 
