@@ -1,5 +1,7 @@
 # PySCPP
 
+[![Documentation Status](https://readthedocs.org/projects/pyscpp/badge/?version=latest)](https://pyscpp.readthedocs.io/en/latest/?badge=latest)
+
 This is a python implementation of both the SCPP compiler and the SLVM. See [here for SCPP and SLVM spec](https://www.github.com/Its-Jakey/SCPP).
 
 Note: This is a work in progress.
