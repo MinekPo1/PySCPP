@@ -8,10 +8,10 @@ Note: This is a work in progress.
 
 Progress:
 
-- 🟠 Compiler
+- 🟢 Compiler
   - 🟢 Parser & Lexer
-  - 🟠 Code optimization
-  - ⚫ Assembly
+  - 🟢 Code optimization
+  - 🟠 Assembly
 - 🟠 VM
   - 🟢 instructions
   - ⚫ graphics
