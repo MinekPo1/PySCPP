@@ -1650,6 +1650,18 @@ post_assembler_optimizations = [
 			"<2>",
 		]
 	),
+	(
+		[
+			"storeAtVar",
+			"<1>",
+			"loadAtVar",
+			"<1>",
+		],
+		[
+			"storeAtVar",
+			"<1>"
+		]
+	)
 ]
 
 
@@ -1785,6 +1797,7 @@ class Assembler:
 							continue
 						if repl_vars[a] != b:
 							break
+						continue
 					if a != b:
 						break
 				else:
