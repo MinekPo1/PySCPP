@@ -6,7 +6,15 @@ This is a python implementation of both the SCPP compiler and the SLVM. See [her
 
 Note: This is a work in progress.
 
-Progress:
+## Usage
+
+After cloning the repo, execute the `PySCPP/PySCPP` as a module with python:
+
+    python -m PySCPP
+
+(note: this assumes you are in the root folder of the repo)
+
+## Progress
 
 - 🟢 Compiler
   - 🟢 Parser & Lexer
