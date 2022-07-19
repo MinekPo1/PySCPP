@@ -2,8 +2,19 @@ from __future__ import annotations
 from typing import IO, Callable, Generic, Literal, TypeVar, overload
 from io import StringIO
 import math
-import pygame
 import time
+
+
+GRAPHICS = False
+PYGAME_INIT = False
+
+
+def init_pygame():
+	global pygame, PYGAME_INIT
+	if not PYGAME_INIT:
+		import pygame
+		pygame.init()
+		PYGAME_INIT = True
 
 
 _WT = TypeVar('_WT', float, str)
@@ -53,7 +64,7 @@ class SLVM:
 			@classmethod  # type: ignore
 			def __new__(cls, mem: SLVM._Memory, is_float: bool, *args) \
 				-> SLVM._Memory._MemWrapper[_WT]:
-				print(args)
+				# print(args)
 				return super().__new__(cls)
 
 			def __init__(self, mem: SLVM._Memory, is_float: bool) -> None:
@@ -66,7 +77,7 @@ class SLVM:
 						return float(self.mem._raw[index])  # type:ignore
 					except ValueError:
 						return 0.0  # type:ignore
-				return str(self._raw[index])  # type:ignore
+				return str(self.mem._raw[index])  # type:ignore
 
 			def __setitem__(self, index: int, value: _WT) -> None:
 				self.mem._raw[index] = value
@@ -126,7 +137,9 @@ class SLVM:
 		self._free_chunks = []
 		self._stack = []
 		self._graphic_buffer = []
-		self._screen = pygame.display.set_mode((640, 480))
+		if GRAPHICS:
+			init_pygame()
+			self._screen = pygame.display.set_mode((640, 480))
 
 		self.console = StringIO()
 
@@ -134,7 +147,7 @@ class SLVM:
 			open('.slvmcloud', 'r').close()
 		except FileNotFoundError:
 			f = open('.slvmcloud', 'w')
-			for i in range(10):
+			for _ in range(10):
 				f.write('0\n')
 
 	def __iter__(self):
@@ -305,8 +318,8 @@ class SLVM:
 		self._prep_var(var)
 		self._memory[self._var_lookup[var]] = self._a_reg
 
-	@_wrap("jst")
-	def _jst(self):
+	@_wrap("jts")
+	def _jts(self):
 		self._stack.append(self._code_ptr)
 		try:
 			self._code_ptr = int(self._get_next_safe())
@@ -414,6 +427,8 @@ class SLVM:
 			except ValueError as e:
 				self._running = False
 				raise ValueError(f"Invalid jump target: {self._current}") from e
+		else:
+			self._code_ptr += 1
 
 	@_wrap("jf")
 	def _jf(self):
@@ -423,6 +438,8 @@ class SLVM:
 			except ValueError as e:
 				self._running = False
 				raise ValueError(f"Invalid jump target: {self._current}") from e
+		else:
+			self._code_ptr += 1
 
 	@_wrap("boolAndWithVar")
 	def _boolAndWithVar(self):

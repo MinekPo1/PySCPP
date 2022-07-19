@@ -1,0 +1,7 @@
+rules:
+- id: move-condition-into-assertion
+  description: Move condition into assertion.
+  pattern: |
+    if ${condition}:
+      assert False, ${message?}
+  replacement: assert not ${condition}, ${message}

@@ -27,6 +27,12 @@ def display_errors(errors: list[Error]) -> None:
 	print("Errors:")
 	p_stack: list[Pos] = []
 	for error in errors:
+		if error.pos[2] not in file_cache:
+			try:
+				file_cache[error.pos[2]] = open(error.pos[2], "r").read()
+			except FileNotFoundError:
+				print(f"Could not find file: {error.pos[2]}")
+				continue
 		lines = file_cache[error.pos[2]].split("\n")
 		if error.stack:
 			for i,j in zip(error.stack, p_stack):
@@ -40,6 +46,9 @@ def display_errors(errors: list[Error]) -> None:
 			p_stack = error.stack
 
 		print(error.message)
-		print(f"{error.pos[0]+1: >2}| ",lines[error.pos[0]])
-		tabs = lines[error.pos[0]][:error.pos[1]].count("\t")
-		print("   ",'\t'*tabs," "*(error.pos[1]-tabs-4),"^")
+		try:
+			print(f"{error.pos[0]+1: >2}| ",lines[error.pos[0]])
+			tabs = lines[error.pos[0]][:error.pos[1]].count("\t")
+			print("   ",'\t'*tabs," "*(error.pos[1]-tabs-4),"^")
+		except IndexError:
+			print(f"{error.pos[0]+1: >2}| ","<EOF>")

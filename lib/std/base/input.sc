@@ -1,19 +1,19 @@
 
 
 public namespace input {
-    public func mouseX() {
+    public inline func mouseX() {
         return _asm_("mouseX");
     }
-    public func mouseY() {
+    public inline func mouseY() {
         return _asm_("mouseY");
     }
-    public func isMouseDown() {
+    public inline func isMouseDown() {
         return _asm_("mouseDown");
     }
-    public func isKeyPressed(key) {
+    public inline func isKeyPressed(key) {
         return _asm_("isKeyPressed", key);
     }
-    public func ask(message) {
+    public inline func ask(message) {
         return _asm_("ask", message);
     }
 }

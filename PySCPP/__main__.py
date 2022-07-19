@@ -1,9 +1,11 @@
-from sys import argv, stdin, stdout
+from sys import argv
 from pprint import pprint
-from PySCPP import compiler, vm
+from PySCPP import compiler, vm, AST
 from PySCPP.utils import display_errors
 from typing import TypedDict
+from pathlib import Path
 from glob import glob
+
 
 class DirtyOptions(TypedDict):
 	"""
@@ -17,6 +19,9 @@ class DirtyOptions(TypedDict):
 	run: bool
 	out: str
 	opt: int
+	lib: bool
+	objs: bool
+	graphics: bool
 
 
 class Options(TypedDict):
@@ -31,6 +36,9 @@ class Options(TypedDict):
 	run: bool
 	out: str
 	opt: int
+	lib: bool
+	objs: bool
+	graphics: bool
 
 
 def print_help():
@@ -48,8 +56,9 @@ def print_help():
 	print("    --scan, -S    Output the scanned tree. Don't assemble the file.")
 	print("    --silent, -s  Don't print errors.")
 	print("    --run, -r     Run the created assembly.")
-	print("    --inp, -i     Where to take the code from.")
-	print("    --out, -o     Where to put the result.")
+	print("    --inp, -i     Where to take the code from. Can be a glob pattern.")
+	print("    --out, -o     Where to put the result. {} will be replaced with")
+	print("                  the input file name.")
 	print("    --opt, -O     When entered once the compiler will not obfuscate")
 	print("                  variables to save space. When entered a second time")
 	print("                  the compiler will not preform optimizations other")
@@ -57,7 +66,9 @@ def print_help():
 	print(
 		"                  time the compiler will not preform any optimizations."
 	)
-	quit(1)
+	print("    --lib, -l     Show the list of available libraries and exit.")
+	print("    --graph, -g   Enable graphics mode in the vm.")
+	quit(0)
 
 
 arguments = [
@@ -75,6 +86,9 @@ flags = {
 	"--tree": "tree",
 	"--scan": "scan",
 	"S": "scan",
+	"--lib": "lib",
+	"l": "lib",
+	"--objs": "objs",
 }
 
 multi_flags = {
@@ -96,8 +110,11 @@ defaults: DirtyOptions = {
 	"tree": False,
 	"scan": False,
 	"run": False,
-	"out": "out.slvm.txt",
+	"out": "{}.slvm.txt",
 	"opt": 0,
+	"lib": False,
+	"objs": False,
+	"graphics": False,
 }
 
 
@@ -181,27 +198,48 @@ def main() -> None:
 		Main function.
 	"""
 	options = parse_args()
+	if options["lib"]:
+		print("Available libraries:")
+		libs = []
+		for i in compiler.INCLUDE_PATH:
+			libs.extend(i.glob("*.sc"))
+		for i in sorted(libs):
+			print(i.name)
+		quit(0)
+
+	if options["graphics"]:
+		vm.GRAPHICS = True
 	compiler.OPT = options["opt"]
-	print(options['opt'])
-	with open(options["input"], "r") as f:
-		code = f.read()
-	if options["tokens"] or options["tree"] or options["scan"]:
-		errors = show_tree_or_tokens(code, options)
-	out,errors = compiler.compile(code, options["input"])
-	if errors:
-		if not options["silent"]:
-			display_errors(errors)
-		quit(1)
-	if options["run"]:
-		class IO:
-			write = stdout.write
-			flush = stdout.flush
-			read = stdin.read
-		vm.SLVM.console = IO
-		vm.SLVM(out).run()
-		quit(1)
-	with open(options["out"], "w") as f:
-		f.write(out)
+	for fn in glob(options["input"]):
+		file = Path(fn)
+		code = file.read_text()
+		if options["tokens"] or options["tree"] or options["scan"] or options["objs"]:
+			print(f"{fn}:")
+			show_tree_or_tokens(code, options)
+			continue
+		out,errors = compiler.compile(code, options["input"])
+		if errors:
+			if not options["silent"]:
+				display_errors(errors)
+			quit(1)
+		if options["run"]:
+			class IO:
+				def write(self, s: str) -> None:
+					print(s, end="")
+
+				def read(self) -> str:
+					return input()
+
+				def flush(self) -> None:
+					pass
+
+			vm.SLVM.console = IO()
+			the_vm = vm.SLVM(out)
+			the_vm.console = IO()
+			the_vm.run()
+			quit()
+		with open(options["out"].format(file.name.removesuffix(".sc")), "w") as f:
+			f.write(out)
 
 
 def show_tree_or_tokens(code, options):
@@ -214,19 +252,31 @@ def show_tree_or_tokens(code, options):
 	if result:
 		if not options["silent"]:
 			display_errors(result)
-		quit(1)
+		return
 	if options["tree"]:
 		pprint(tree)
-		quit(0)
-	tree, result = compiler.Scanner(tree).scan()
+	scanner = compiler.Scanner(tree)
+	tree, result = scanner.scan()
 	if result:
 		if not options["silent"]:
 			display_errors(result)
-		quit(1)
-	pprint(tree)
-	quit(0)
+		return
+	if options["scan"]:
+		pprint(tree)
+	if options["objs"]:
+		for k,v in scanner.objects.items():
+			type_ = "    "
+			if isinstance(v, (AST.FuncDef, compiler.ScannedFunction)):
+				type_ = "func"
+			elif isinstance(v, AST.Namespace):
+				type_ = " ns "
+			else:
+				type_ = " var"
+			if scanner.is_private.get(k):
+				print("private",type_,k)
+			else:
+				print(" public",type_,k)
 
-	return result
 
 if __name__ == '__main__':
 	main()

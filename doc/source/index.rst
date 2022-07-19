@@ -12,6 +12,7 @@ Welcome to PySCPP's documentation!
 
    compiler
    vm
+   AST
 
 
 

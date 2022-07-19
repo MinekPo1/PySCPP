@@ -29,7 +29,6 @@ class Accessible(Element):
 @dataclass
 class Root(Container):
 	includes: list[Include]
-	definitions: list[Definition]
 	resolved_includes: list[str] = field(default_factory=list)
 
 
@@ -144,6 +143,5 @@ class Include(Element):
 
 
 @dataclass
-class Definition(Element):
-	name: str
-	value: Expression
+class DefineRef(Expression):
+	expr: Expression

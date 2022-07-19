@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Callable, Generic, Type, TypeAlias, TypeVar, NewType, \
@@ -16,12 +17,24 @@ Pos: TypeAlias = tuple[int, int, str]
 
 
 OPT = 0
-"see help for description"
+"""
+.. table:: ``OPT`` value and effect on the compiler
+	:widths: auto
+
+	===== ================ ================== =====================
+	Value Name obfuscation Misc Optimizations Dead Code elimination
+	===== ================ ================== =====================
+	0     Yes              Yes                Yes
+	1     No               Yes                Yes
+	2     No               No                 Yes
+	3     No               No                 No
+	===== ================ ================== =====================
+"""
 
 
 INCLUDE_PATH = [
 	Path(__file__).parent.parent / "lib",
-	Path(__file__).parent.parent / "lib" / "std" / "base",
+	Path(__file__).parent.parent / "lib" / "std",
 	Path(__file__).parent.parent / "lib" / "std" / "base",
 ]
 
@@ -130,10 +143,11 @@ CompoundTokens = {
 	"&&": Token.Type.OPERATOR,
 	"||": Token.Type.OPERATOR,
 	"..": Token.Type.OPERATOR,
+	">>": Token.Type.OPERATOR,
+	"<<": Token.Type.OPERATOR,
 	"++": Token.Type.MODIFIER,
 	"--": Token.Type.MODIFIER,
 	"::": Token.Type.MEMBER_SELECT,
-	"//": Token.Type.UNKNOWN
 }
 
 Keywords = {
@@ -156,7 +170,8 @@ Keywords = {
 }
 
 
-def tokenize(code: str, source: str) -> list[Token]:
+def tokenize(code: str, source: str, starting_pos: Pos | None = None) \
+		-> list[Token]:
 	"""
 	It takes in code and a source file name both as strings,
 	and returns a list of tokens
@@ -169,10 +184,14 @@ def tokenize(code: str, source: str) -> list[Token]:
 	:warning: The code is very bad
 	"""
 
-	utils.file_cache[source] = code
+	if source not in utils.file_cache:
+		utils.file_cache[source] = code
 
 	code += " "
 	pointer = CodePointer(code, source)
+	if starting_pos is not None:
+		pointer.line = starting_pos[0]
+		pointer.column = starting_pos[1]
 	tokens: list[Token] = []
 	current = ""
 	token_shelf = None
@@ -196,7 +215,7 @@ def tokenize(code: str, source: str) -> list[Token]:
 					break
 			del tokens[-1]
 			continue
-		if tokens != [] and c == "/" and current == "" and tokens[-1].value == "*":
+		if tokens != [] and c == "*" and current == "" and tokens[-1].value == "/":
 			while True:
 				c = next(pointer)
 				if c is None:
@@ -206,11 +225,12 @@ def tokenize(code: str, source: str) -> list[Token]:
 			del tokens[-1]
 			continue
 
-		if current in CompoundTokens:
-			tokens.append(Token(CompoundTokens[current], current, pointer.pos))
+		if current + c in CompoundTokens:
+			tokens.append(Token(CompoundTokens[current+c], current+c, pointer.pos))
+			current = ""
 			continue
 
-		if tokens != [] and tokens[-1].value+c in CompoundTokens:
+		if tokens != [] and current == "" and tokens[-1].value + c in CompoundTokens:
 			tokens[-1].value += c
 			tokens[-1].type = CompoundTokens[tokens[-1].value]
 			continue
@@ -257,6 +277,7 @@ def tokenize(code: str, source: str) -> list[Token]:
 			continue
 
 		if current == "#":
+			pos = pointer.pos
 			# look for newline
 			while True:
 				current += c
@@ -266,7 +287,7 @@ def tokenize(code: str, source: str) -> list[Token]:
 					current = ""
 					break
 				if c == "\n":
-					tokens.append(Token(Token.Type.PREPROCESSOR, current, pointer.pos))
+					tokens.append(Token(Token.Type.PREPROCESSOR, current, pos))
 					current = ""
 					break
 			continue
@@ -290,6 +311,24 @@ def _wrap(func: Callable[[Parser], T]) -> Callable[[Parser], T]:
 	return wrapper
 
 
+oper_weight = {
+	'+': 1,
+	'-': 1,
+	'*': 2,
+	'/': 2,
+	'%': 2,
+	'^': 3,
+	'<': 4,
+	'>': 4,
+	'<=': 4,
+	'>=': 4,
+	'==': 4,
+	'!=': 4,
+	'&&': 5,
+	'||': 5,
+}
+
+
 class Parser:
 	"""
 		Takes a list of tokens and parses it into an AST.
@@ -311,6 +350,7 @@ class Parser:
 	errors: list[Error]
 	stack: list[AST.Container]
 	root: AST.Root
+	definitions: dict[str, AST.Expression]
 
 	def __init__(
 			self,
@@ -320,7 +360,7 @@ class Parser:
 		self.errors = []
 		if root is None:
 			self.root = AST.Root(
-				includes=[], definitions=[], pos=(0, 0, source), children=[]
+				includes=[], pos=(0, 0, source), children=[]
 			)
 		else:
 			self.root = root
@@ -328,6 +368,7 @@ class Parser:
 		self.stack = [self.root]
 		self.container = self.root
 		self.token_view = self._TokenViewType(self)
+		self.definitions = {}
 
 	def consume_token(self) -> bool:
 		self.tokens_i += 1
@@ -428,12 +469,22 @@ class Parser:
 		if self.token.value.startswith("#define"):
 			# place the define in the root
 			assert isinstance(self.container, AST.Root), "#define must be in root"
-			self.root.definitions.append(
-				AST.Definition(
-					self.token.pos,self.token.value.split()[1],
-					self.parse_expression()
-				)
+			# lex the value
+			print(" ".join(self.token.value.split()[2:]))
+			tokens = tokenize(
+				" ".join(self.token.value.split()[2:]), self.token.pos[2], self.token.pos
 			)
+			print(tokens)
+			# parse the value
+			sub_scan = type(self)(tokens, self.token.pos[2], self.root)
+			value = sub_scan.parse_expression()
+			self.errors.extend([
+				(i,i.stack.append(self.token.pos))[0] for i in sub_scan.errors
+			])
+
+			print(self.token.value.split()[1],value)
+
+			self.definitions[self.token.value.split()[1]] = value
 
 			return
 
@@ -539,6 +590,11 @@ class Parser:
 			and self.token.value == "inline":
 			func.inline = True
 			self.consume_token()
+
+			if self.token.type == Token.Type.KEYWORD \
+				and self.token.value in {'public','private'}:
+				self.assert_(False, "Access specifier after the `inline` keyword.")
+				self.consume_token()
 
 		self.consume_token()
 
@@ -654,7 +710,7 @@ class Parser:
 			return
 		# must be a variable assignment
 		self.parse_var_assignment()
-		self.consume_token()
+		# self.consume_token()
 
 	@_wrap
 	def parse_var_def(self):
@@ -804,55 +860,85 @@ class Parser:
 		# - `A` register query
 		# - a literal array
 
-		if self.token_view[1].type == Token.Type.MEMBER_SELECT:
-			self.parse_member_select()
-
 		a: AST.Expression | None = None
 
-		if self.token_view[1].type == Token.Type.PAREN_OPEN:
-			self.parse_func_call()
-			a = self.head.children.pop()  # type:ignore
+		# check if we can scan ahead
+		if len(self.tokens) > self.tokens_i:
+			if self.token_view[1].type == Token.Type.MEMBER_SELECT:
+				self.parse_member_select()
 
-		if self.token.type in {Token.Type.IDENTIFIER, Token.Type.MEMORY_MODIFIER}:
-			a = self.parse_var_ref()
+			if self.token_view[1].type == Token.Type.PAREN_OPEN \
+				and self.token.type == Token.Type.IDENTIFIER:
+				self.parse_func_call()
+				a = self.head.children.pop()  # type:ignore
 
-		if self.token.type == Token.Type.BRACKET_OPEN:
-			a = self.parse_literal_array()
+		for _ in [0]:
+			if self.token.type in {Token.Type.IDENTIFIER, Token.Type.MEMORY_MODIFIER}:
+				if self.token.value in self.definitions:
+					a = AST.DefineRef(self.token.pos,self.definitions[self.token.value])
+					if a is None:
+						a = AST.Var(pos=self.token.pos, name=self.token.value)
+					with contextlib.suppress(AssertionError):
+						self.consume_token()
+						break
+				else:
+					a = self.parse_var_ref()
+					break
 
-		if self.token.type == Token.Type.NUMBER:
-			a = self.parse_number()
+			if self.token.type == Token.Type.BRACKET_OPEN:
+				a = self.parse_literal_array()
+				break
 
-		if self.token.type == Token.Type.STRING:
-			a = self.parse_string()
+			if self.token.type == Token.Type.NUMBER:
+				a = self.parse_number()
+				with contextlib.suppress(AssertionError):
+					self.consume_token()
+				break
+			if self.token.type == Token.Type.STRING:
+				a = self.parse_string()
+				with contextlib.suppress(AssertionError):
+					self.consume_token()
+				break
+			if self.token.type == Token.Type.KEYWORD \
+				and self.token.value == '_getValueOfA_':
+				a = self.parse_getValueOfA()
+				break
 
-		if self.token.type == Token.Type.KEYWORD \
-			and self.token.value == '_getValueOfA_':
-			a = self.parse_getValueOfA()
+			if self.token.type == Token.Type.KEYWORD and self.token.value == '_asm_':
+				self.parse_raw_asm()
+				a = self.head.children.pop()  # type:ignore
+				break
 
-		if self.token.type == Token.Type.KEYWORD and self.token.value == '_asm_':
-			self.parse_raw_asm()
-			a = self.head.children.pop()  # type:ignore
+			# if self.token.type == TokenType.PAREN_CLOSE:
+			# 	assert False, "Unexpected closing parenthesis"
 
-		# if self.token.type == TokenType.PAREN_CLOSE:
-		# 	assert False, "Unexpected closing parenthesis"
-
-		if self.token.type == Token.Type.PAREN_OPEN:
-			self.consume_token()
-			a = self.parse_expression()
-			if a is None:
-				# enter a replacement for the empty expression
-				a = AST.Expression(pos=self.token.pos)
-			if self.assert_(self.token.value == ')', "Expected closing parenthesis"):
+			if self.token.type == Token.Type.PAREN_OPEN:
 				self.consume_token()
+				a = self.parse_expression()
+				if a is None:
+					# enter a replacement for the empty expression
+					a = AST.Expression(pos=self.token.pos)
+				if self.assert_(self.token.value == ')', "Expected closing parenthesis"):
+					self.consume_token()
+				break
+		assert a is not None, f"Expected expression, got {self.token.type}"
 
-		if a is None:
-			assert False, "Expected expression"
+		with contextlib.suppress(AssertionError):
+			a = self.parse_oper(a)
 
-		while self.token.type == Token.Type.OPERATOR:
+		return a
+
+	def parse_oper(self, a):
+		if self.token.type == Token.Type.OPERATOR:
 			op = self.token.value
 			self.consume_token()
 			b = self.parse_expression()
 			a = AST.Operation(pos=a.pos, op=op, left=a, right=b)
+			# check if the weight of the operation is higher than the current one
+			if isinstance(b, AST.Operation) and oper_weight[b.op] < oper_weight[op]:
+				a.right = b.left
+				b.left = a
+				a = b
 
 		return a
 
@@ -904,15 +990,11 @@ class Parser:
 
 	@_wrap
 	def parse_number(self):
-		num = AST.Literal(pos=self.token.pos, value=self.token.value)
-		self.consume_token()
-		return num
+		return AST.Literal(pos=self.token.pos, value=self.token.value)
 
 	@_wrap
 	def parse_string(self):
-		string = AST.Literal(pos=self.token.pos, value=self.token.value[1:-1])
-		self.consume_token()
-		return string
+		return AST.Literal(pos=self.token.pos, value=self.token.value[1:-1])
 
 	@_wrap
 	def parse_member_select(self):
@@ -1110,7 +1192,6 @@ class Scanner:
 	remote: bool
 	errors: list[Error]
 	namespace_stack: list[tuple[str,Pos]]
-	definitions: dict[str, str]
 	accessed: dict[str, int]
 	bucket: list[AST.Element]
 
@@ -1153,10 +1234,11 @@ class Scanner:
 		self.has_main = False
 		self.bucket = []
 		self.accessed = {}
+		self.definitions = {}
 
 	@property
 	def namespace(self) -> str:
-		return "::".join([i[0] for i in self.namespace_stack])
+		return "::".join([i[0] for i in self.namespace_stack if i[0]])
 
 	def scan(self) -> tuple[ScannedRoot,list[Error]]:
 		"""
@@ -1164,7 +1246,7 @@ class Scanner:
 			After scanning the tree it returns it along with errors
 		"""
 		# add builtins
-		for i in builtins.all_builtins.values():
+		for i in builtins.get_builtins().values():
 			self.tree.children.insert(0, i)
 		self.scan_root(self.tree)
 		if OPT < 3:
@@ -1178,8 +1260,8 @@ class Scanner:
 						continue
 					if isinstance(v, (AST.Namespace,ScannedFunction)):
 						continue
-					else:
-						print("Todo:",k)
+					# else:
+					# 	print("Todo:",k)
 		return cast(Scanner.ScannedRoot,self.tree), self.errors
 
 	def jns(self, ns1: str, ns2: str | None = None) -> str:
@@ -1188,7 +1270,7 @@ class Scanner:
 		return f"{ns1}::{ns2}".removeprefix("::")
 
 	def get(self, name: str, namespace: str | None = None) -> str | None:
-		print("get",name,namespace)
+		# print("get",name,namespace)
 		name_l = name.split("::")
 		ns = self.namespace if namespace is None else namespace
 		# check if the name is in the current namespace
@@ -1196,17 +1278,17 @@ class Scanner:
 				not self.is_private.get(f"{ns}::{name_l[0]}") or namespace is None
 			):
 			if len(name_l) == 1:
-				print("return here:",self.jns(ns, name_l[0]))
+				# print("return here:",self.jns(ns, name_l[0]))
 				return self.jns(ns, name_l[0])
 			r = self.get(
 				"::".join(name_l[1:]),
 				f"{ns}::{name_l[0]}".removeprefix("::")
 			)
 			if r is not None:
-				print("return",ns,r)
+				# print("return",ns,r)
 				return self.jns(ns,r)
 		if namespace is not None:
-			print("nope")
+			# print("nope")
 			return None
 		# check if the name is in namespaces upwards
 		while "::" in ns:
@@ -1226,10 +1308,10 @@ class Scanner:
 			"::".join(name_l[1:]),
 			name_l[0]
 		)
-		if r is None:
-			print("nope")
-		else:
-			print(r)
+		# if r is None:
+		# 	print("nope")
+		# else:
+		# 	print(r)
 		return r
 
 	@auto(AST.Root)
@@ -1239,8 +1321,6 @@ class Scanner:
 		self.remote = False
 		for include in root.includes:
 			self.scan_include(include)
-		for definition in root.definitions:
-			self.scan_definition(definition)
 		self.remote = remote
 		self.scan_container(root)
 
@@ -1248,7 +1328,7 @@ class Scanner:
 	def scan_include(self, include: AST.Include):
 		# locate the file
 		include_val = include.value
-		print(include_val)
+		# print(include_val)
 		if include_val in self.tree.resolved_includes:
 			return  # already included
 		self.tree.resolved_includes.append(include_val)
@@ -1276,17 +1356,10 @@ class Scanner:
 			self.errors.extend(errors)
 
 			# place the contents into root
-			for definition in root.definitions:
-				self.tree.definitions.append(definition)
 			for include in root.includes:
 				self.scan_include(include)
 			for i in root.children:
 				self.tree.children.insert(0,i)
-
-	@_wrapS
-	def scan_definition(self, definition: AST.Definition):
-		assert definition.name not in self.definitions,\
-			f"Duplicate definition of {definition.name}"
 
 	def scan_auto(self, elm: AST.Element):
 		# assert elm.__class__ in self.auto, f"No auto-scanner for {elm.__class__}"
@@ -1313,7 +1386,7 @@ class Scanner:
 	def scan_function(self, func: AST.FuncDef):
 
 		if func.name == "main":
-			if not self.has_main and len(func.args) == 0:
+			if not self.has_main and len(func.args) == 0 and not func.private:
 				self.remote = False
 				self.has_main = True
 			else:
@@ -1322,10 +1395,17 @@ class Scanner:
 		if f"{self.namespace}::{func.name}".removeprefix("::") in self.objects:
 			func_obj = self.objects[f"{self.namespace}::{func.name}".removeprefix("::")]
 			assert isinstance(func_obj, ScannedFunction),\
-				f"Namespace collision: {func.name}"
+				f"Namespace collision: {func.name} for {len(func.args)} args"
+			if not func.private \
+				and self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")]:
+				self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")] \
+					= False
+
 		else:
 			func_obj = ScannedFunction(implementations={})
 			self.objects[f"{self.namespace}::{func.name}".removeprefix("::")] = func_obj
+			if func.private:
+				self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")] = True
 
 		# TODO: Implement complex signatures
 		assert len(func.args) not in func_obj.implementations, \
@@ -1336,10 +1416,22 @@ class Scanner:
 			self.objects[f"Func:{func.name}:0"] = func
 		else:
 			self.objects[self.jns(f"Func:{func.name}:{len(func.args)}")] = func
+			if func.private:
+				self.is_private[self.jns(f"Func:{func.name}:{len(func.args)}")] = True
 
 		func_obj.implementations[len(func.args)] = func
 
 		func.name = f"Func:{func.name}:{len(func.args)}"
+
+		for var in func.args:
+			var.name = f"{func.name}::{var.name}"
+			# construct vardef
+			vardef = AST.VarDef(
+				pos=var.pos,
+				var=var,
+				value=None
+			)
+			self.objects[self.jns(var.name)] = vardef
 
 		if self.remote:
 			self.to_be_checked[func.name] = func
@@ -1380,6 +1472,8 @@ class Scanner:
 		if self.jns(var.var.name) in self.objects:
 			raise AssertionError(f"Duplicate variable {var.var.name}")
 		self.objects[self.jns(var.var.name)] = var
+		if var.private:
+			self.is_private[self.jns(var.var.name)] = True
 		if var.offset is not None:
 			self.scan_auto(var.offset)
 		if var.value is not None:
@@ -1389,14 +1483,22 @@ class Scanner:
 	@_wrapS
 	def scan_call(self, call: AST.FuncCall):
 		# get the function
+		if call.name == "main":
+			call.name = "0main"
+
 		func = self.get(
-			f"{'::'.join(call.name.split('::')[:-1])}::Func:{call.name.split('::')[-1]}:{len(call.args)}".removeprefix("::")
+			(
+				f"{'::'.join(call.name.split('::')[:-1])}::"
+				f"Func:{call.name.split('::')[-1]}:{len(call.args)}"
+			).removeprefix("::")
 		)
 
-		if func is None:
+		if func is None or func not in self.objects:
 			func = self.get(call.name)
 			if func is None:
-				print(*self.objects)
+				if call.name == "0main":
+					raise AssertionError(f"Name error: \"{call.name}\". Note: main function cannot be called.")
+				# print(*self.objects)
 				raise AssertionError(f"Name error: \"{call.name}\"")
 			assert isinstance(self.objects[func], ScannedFunction),\
 				f"\"{call.name}\" is not a function"
@@ -1404,19 +1506,18 @@ class Scanner:
 				f"\"{call.name}\" cannot be bound to {len(call.args)} arguments."
 			)
 
-		assert func != "Func:main:0",\
-			"main function cannot be called, please touch grass"
-
-		print("call", call.name, func)
+		# print("call", call.name, func)
 		if func in self.accessed:
 			self.accessed[func] += 1
 		else:
 			self.accessed[func] = 1
 		if func in self.to_be_checked:
+			print(f"{call.name} is called for the #1 time")
 			# set namespace to the function's namespace
 			pos = self.objects[func].pos  # type:ignore
 			with self.Namespace(self, pos, func, True):
 				self.scan_container(self.to_be_checked[func])
+			del self.to_be_checked[func]
 		call.name = func
 
 		for child in call.args:
@@ -1435,6 +1536,8 @@ class Scanner:
 	def scan_var(self, var: AST.Var):
 		name = self.get(var.name)
 		assert name is not None, f"Name error: \"{var.name}\""
+		print(name)
+		assert self.objects.get(name) is not None, f"Name error: \"{var.name}\""
 		var.name = name
 		if var.name in self.accessed:
 			self.accessed[var.name] += 1
@@ -1469,6 +1572,33 @@ class Scanner:
 
 		self.scan_container(for_)
 
+	@auto(AST.RawASM)
+	@_wrapS
+	def scan_asm(self, asm: AST.RawASM):
+		for child in asm.arguments:
+			self.scan_auto(child)
+
+	@auto(AST.Return)
+	@_wrapS
+	def scan_return(self, ret: AST.Return):
+		if ret.value is not None:
+			self.scan_auto(ret.value)
+
+	@auto(AST.Operation)
+	@_wrapS
+	def scan_operation(self, op: AST.Operation):
+		self.scan_auto(op.left)
+		self.scan_auto(op.right)
+
+	@auto(AST.Literal)
+	def scan_literal(self, lit: AST.Literal):
+		pass
+
+	@auto(AST.DefineRef)
+	def scan_define_ref(self, ref: AST.DefineRef):
+		with self.Namespace(self, ref.pos, ""):
+			self.scan_auto(ref.expr)
+
 
 def _wrapA(func):
 	def wrapper(self, elm: AST.Element):
@@ -1482,13 +1612,67 @@ def _wrapA(func):
 SHORT_NAME_CHARS = printable
 
 
-def short_name_generator(min_size: int = 2,prefix="") -> Iterator[str]:
+def short_name_generator(min_size: int = 1,prefix="") -> Iterator[str]:
 	if min_size <= 1:
 		yield from (prefix+i for i in SHORT_NAME_CHARS)
 	n = short_name_generator(min_size - 1)
 	while True:
 		for i in SHORT_NAME_CHARS:
 			yield from (prefix+i+j for j in n)
+
+
+post_assembler_optimizations = [
+	(
+		[
+			"loadAtVar",
+			"<1>",
+			"storeAtVar",
+			"<1>",
+		],
+		[
+			"loadAtVar",
+			"<1>",
+		]
+	),
+	(
+		[
+			"loadAtVar",
+			"<1>",
+			"storeAtVar",
+			"<2>",
+			"storeAtVar",
+			"<1>",
+		],
+		[
+			"loadAtVar",
+			"<1>",
+			"storeAtVar",
+			"<2>",
+		]
+	),
+]
+
+
+oper_map = {
+	"+":  "addWithVar",
+	"-":  "subWithVar",
+	"*":  "mulWithVar",
+	"/":  "divWithVar",
+	"%":  "modWithVar",
+	"<<": "bitwiseLsfWithVar",
+	">>": "bitwiseRsfWithVar",
+	"&":  "bitwiseAndWithVar",
+	"|":  "bitwiseOrWithVar",
+	"..": "join",
+	"&&": "boolAndWithVar",
+	"||": "boolOrWithVar",
+	"==": "boolEqualsWithVar",
+	">=": "largerThanOrEqualWithVar",
+	"<=": "smallerThanOrEqualWithVar",
+	"!=": "boolNotEqualsWithVar",
+	">":  "largerThanWithVar",
+	"<":  "smallerThanWithVar",
+}
 
 
 class Assembler:
@@ -1499,14 +1683,16 @@ class Assembler:
 	lines: list[str]
 	labels_to_be_defined: list[str]
 	labels: dict[str, int]
-	labels_to_resolve: list[int]
 	functions: dict[str, AST.FuncDef]
 
 	sng: Iterator[str]
+	ovg: Iterator[str]
 
 	ret_as_jump: int | str | None
 
 	var_lookup: dict[str,str]
+	op_vars: list[str]
+	op_depth: int
 
 	auto: Auto[Assembler] = Auto()
 
@@ -1517,9 +1703,9 @@ class Assembler:
 		self.in_main = False
 		self.labels = {}
 		self.labels_to_be_defined = []
-		self.labels_to_resolve = []
 		self.functions = {}
 		self.ret_as_jump = None
+		self.op_vars = []
 
 	def assemble(self) -> tuple[str,list[Error]]:
 		"""
@@ -1531,6 +1717,12 @@ class Assembler:
 
 		self.var_lookup = {}
 		self.sng = short_name_generator(prefix="%")
+		if OPT == 0:
+			self.ovg = short_name_generator(prefix="o")
+		else:
+			# make the operation variables easier to understand if OPT > 0
+			self.ovg = short_name_generator(prefix="%Oper_")
+		self.op_depth = 0
 
 		main_id, main = self.find_main(self.tree)
 		# set global variables
@@ -1538,11 +1730,11 @@ class Assembler:
 			if isinstance(child, AST.VarDef):
 				if child.offset is not None:
 					self.lines.append("createArray")
-					self.lines.append(f"{child.var.name}")
+					self.lines.append(self.var(child.var.name))
 				if child.value is not None:
 					self.assemble_auto(child.value)
 					self.lines.append("storeAtVar")
-					self.lines.append(f"{child.var.name}")
+					self.lines.append(self.var(child.var.name))
 			if isinstance(child, AST.FuncDef):
 
 				self.functions[child.name] = child
@@ -1559,10 +1751,12 @@ class Assembler:
 			if isinstance(child, AST.FuncDef) and child.name != main_id \
 					and not child.inline:
 				# create label
-				self.labels[child.name] = len(self.lines)
-				if child.name in self.labels_to_be_defined:
-					self.labels_to_be_defined.remove(child.name)
+				self.labels[f":{child.name}"] = len(self.lines)
+				if f":{child.name}" in self.labels_to_be_defined:
+					self.labels_to_be_defined.remove(f":{child.name}")
 				self.assemble_container(child)
+				if self.lines[-1] != "ret":
+					self.lines.append("ret")
 
 		for label in self.labels_to_be_defined:
 			self.errors.append(Error(
@@ -1571,10 +1765,43 @@ class Assembler:
 				)
 			)
 
-		for line in self.labels_to_resolve:
-			self.lines[line] = f"{self.labels.get(self.lines[line],0)}"
+		if OPT < 2:
+			self.post_asm_opt()
+
+		for i,line in enumerate(self.lines):
+			if line.startswith(":"):
+				self.lines[i] = f"{self.labels.get(line,0)}"
 
 		return "\n".join(self.lines), self.errors
+
+	def post_asm_opt(self):
+		for i,_ in enumerate(self.lines):
+			for pattern, replacement in post_assembler_optimizations:
+				repl_vars = {}
+				for a,b in zip(pattern,self.lines[i:]):
+					if a.startswith("<") and a.endswith(">"):
+						if a not in repl_vars:
+							repl_vars[a] = b
+							continue
+						if repl_vars[a] != b:
+							break
+					if a != b:
+						break
+				else:
+					self.lines[i:i+len(pattern)] = replacement
+					for j in range(len(replacement)):
+						if replacement[j] in repl_vars:
+							self.lines[i+j] = repl_vars[replacement[j]]
+					for label, v in self.labels.items():
+						if v > i:
+							self.labels[label] = v + len(replacement) - len(pattern)
+
+	def var(self,name:str) -> str:
+		if OPT != 0:
+			return name
+		if name not in self.var_lookup:
+			self.var_lookup[name] = next(self.sng)
+		return self.var_lookup[name]
 
 	@_wrapA
 	def find_main(self, _) -> tuple[str, AST.FuncDef | None]:
@@ -1592,7 +1819,6 @@ class Assembler:
 	def assert_(self, condition: bool, message: str, pos: Pos) -> None:
 		if not condition:
 			self.errors.append(Error(message, pos))
-			raise AssertionError(message)
 
 	def assemble_auto(self, elm: AST.Element) -> None:
 		if type(elm) not in self.auto._functions:
@@ -1607,13 +1833,7 @@ class Assembler:
 	@_wrapA
 	@auto(AST.VarDef)
 	def assemble_var_def(self, var: AST.VarDef) -> None:
-		name = var.var.name
-		if OPT == 0:
-			if name in self.var_lookup:
-				name = self.var_lookup[name]
-			else:
-				name = next(self.sng)
-				self.var_lookup[var.var.name] = name
+		name = self.var(var.var.name)
 		if var.offset is not None:
 			self.lines.append("createArray")
 			self.lines.append(name)
@@ -1629,7 +1849,7 @@ class Assembler:
 			if isinstance(i, AST.Literal):
 				self.lines.append(f"{i.value}")
 			elif isinstance(i, AST.Var):
-				self.lines.append(f"{i.name}")
+				self.lines.append(self.var(i.name))
 			else:
 				self.assert_(False, "Invalid expression", i.pos)
 
@@ -1654,12 +1874,11 @@ class Assembler:
 				self.assemble_auto(val)
 				if not arg.name.endswith("!"):
 					self.lines.append("storeAtVar")
-					self.lines.append(f"{arg.name}")
+					self.lines.append(self.var(arg.name))
 		self.lines.append("jts")
 		if call.name not in self.labels_to_be_defined:
-			self.labels_to_be_defined.append(call.name)
-		self.labels_to_resolve.append(len(self.lines))
-		self.lines.append(call.name)
+			self.labels_to_be_defined.append(f":{call.name}")
+		self.lines.append(f":{call.name}")
 
 	@_wrapA
 	def assemble_inline_function(self, call: AST.FuncCall) -> None:
@@ -1677,14 +1896,17 @@ class Assembler:
 				self.assemble_auto(val)
 				if not arg.name.endswith("!"):
 					self.lines.append("storeAtVar")
-					self.lines.append(f"{arg.name}")
+					self.lines.append(self.var(arg.name))
 
 		p_raj = self.ret_as_jump
 
-		self.ret_as_jump = f"{call.name}:{len(self.lines)}"
+		self.ret_as_jump = f":{call.name}:{len(self.lines)}"
 
 		self.assemble_container(func)
 
+		if self.lines[-1] == self.ret_as_jump:
+			self.lines.pop()
+			self.lines.pop()
 		self.labels[self.ret_as_jump] = len(self.lines)
 		if self.ret_as_jump in self.labels_to_be_defined:
 			self.labels_to_be_defined.remove(self.ret_as_jump)
@@ -1704,39 +1926,60 @@ class Assembler:
 			self.lines.append("ret")
 			return
 		self.lines.append("jmp")
-		if isinstance(self.ret_as_jump, str):
-			if self.ret_as_jump not in self.labels_to_be_defined:
-				self.labels_to_be_defined.append(self.ret_as_jump)
-			self.labels_to_resolve.append(len(self.lines))
+		if isinstance(self.ret_as_jump,str)\
+			and self.ret_as_jump not in self.labels_to_be_defined:
+			self.labels_to_be_defined.append(self.ret_as_jump)
 		self.lines.append(f"{self.ret_as_jump}")
 
 	@auto(AST.Var)
 	def assemble_var(self, var: AST.Var) -> None:
-		name = var.name
-		if OPT == 0:
-			if name in self.var_lookup:
-				name = self.var_lookup[name]
-			else:
-				name = next(self.sng)
-				self.var_lookup[var.name] = name
+		name = self.var(var.name)
 		self.lines.append("loadAtVar")
 		self.lines.append(name)
 
+	@auto(AST.If)
+	@_wrapA
+	def assemble_if(self, if_: AST.If) -> None:
+		label = f":if:{len(self.lines)}"
+		self.assemble_auto(if_.condition)
+		self.lines.append("jf")
+		self.lines.append(label)
+		self.assemble_container(if_)
+		self.labels[label] = len(self.lines)
 
-post_assembler_optimizations_list = [
-	(rec(r"storeAtVar\n(?P<v>.+)\nloadAtVar\n(?P=v)\n"),r"storeAtVar\n\g<v>\n"),
-]
+	@auto(AST.While)
+	@_wrapA
+	def assemble_while(self, while_: AST.While) -> None:
+		label_start = f":while:{len(self.lines)}"
+		label_end = f":while_end:{len(self.lines)}"
+		# condition
+		self.labels[label_start] = len(self.lines)
+		self.assemble_auto(while_.condition)
+		self.lines.append("jf")
+		self.lines.append(label_end)
 
+		self.assemble_container(while_)
+		self.lines.append("jmp")
+		self.lines.append(label_start)
 
-def post_assembler_optimizations(asm: str) -> str:
-	"""
-	Optimizations that can be done after the assembler has finished.
-	"""
+		self.labels[label_end] = len(self.lines)
 
-	for pattern, repl in post_assembler_optimizations_list:
-		asm = pattern.sub(repl, asm)
+	@auto(AST.Operation)
+	def assemble_operation(self, op: AST.Operation) -> None:
+		self.assemble_auto(op.left)
+		if self.op_depth == len(self.op_vars):
+			self.op_vars.append(next(self.ovg))
+		self.lines.append("storeAtVar")
+		self.lines.append(self.op_vars[self.op_depth])
+		self.op_depth += 1
+		self.assemble_auto(op.right)
+		self.op_depth -= 1
+		self.lines.append(oper_map[op.op])
+		self.lines.append(self.op_vars[self.op_depth])
 
-	return asm
+	@auto(AST.DefineRef)
+	def assemble_define_ref(self, ref: AST.DefineRef) -> None:
+		self.assemble_auto(ref.expr)
 
 
 def compile(code: str, source: str, force: bool = False)\
@@ -1766,5 +2009,4 @@ def compile(code: str, source: str, force: bool = False)\
 	asm, errors = Assembler(tree).assemble()
 	if force:
 		errors.extend(p_errors)  # type:ignore
-	asm = post_assembler_optimizations(asm)
 	return asm, errors

@@ -1,19 +1,12 @@
 from PySCPP import AST
+from copy import deepcopy
 
 print_ = AST.FuncDef(
-	(3, 0, __file__),
+	(2, 0, __file__),
 	[
 		AST.RawASM(
 			(3, 0, __file__),
 			[
-				# AST.Literal(
-				# 	(3, 0, __file__),
-				# 	"loadAtVar"
-				# ),
-				# AST.Var(
-				# 	(3, 0, __file__),
-				# 	"val"
-				# ),
 				AST.Literal(
 					(3, 0, __file__),
 					"print",
@@ -31,7 +24,34 @@ print_ = AST.FuncDef(
 	True
 )
 
+println = AST.FuncDef(
+	(26, 0, __file__),
+	[
+		AST.RawASM(
+			(3, 0, __file__),
+			[
+				AST.Literal(
+					(3, 0, __file__),
+					"println",
+				)
+			]
+		)
+	],
+	"println",
+	[
+		AST.Var(
+			(3, 0, __file__),
+			"!",
+		)
+	],
+	True
+)
+
 
 all_builtins = {
 	"print": print_,
+	"println": println,
 }
+
+def get_builtins():
+	return deepcopy(all_builtins)
