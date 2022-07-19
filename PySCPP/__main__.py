@@ -100,7 +100,7 @@ options = {
 	"--out": "out",
 	"o": "out",
 	"i": "input",
-	"--input": "input",
+	"--inp": "input",
 }
 
 defaults: DirtyOptions = {
