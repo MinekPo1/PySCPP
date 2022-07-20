@@ -1,7 +1,7 @@
 from sys import argv
 from pprint import pprint
 from PySCPP import compiler, vm, AST
-from PySCPP.utils import display_errors
+from PySCPP.utils import display_errors, Monad
 from typing import TypedDict
 from pathlib import Path
 from glob import glob
@@ -254,23 +254,14 @@ def show_tree_or_tokens(code, options):
 	if options["tokens"]:
 		for token in tokens:
 			print(token.type,token.value,sep="\t")
-		quit(0)
-	tree, result = compiler.parse(tokens)
-	if result:
-		if not options["silent"]:
-			display_errors(result)
 		return
+	monad = Monad(tokens)
+	monad >>= compiler.parse
 	if options["tree"]:
-		pprint(tree)
-	scanner = compiler.Scanner(tree)
-	tree, result = scanner.scan()
-	if result:
-		if not options["silent"]:
-			display_errors(result)
+		pprint(monad.value)
 		return
-	if options["scan"]:
-		pprint(tree)
 	if options["objs"]:
+		scanner = compiler.Scanner(monad.value)
 		for k,v in scanner.objects.items():
 			type_ = "    "
 			if isinstance(v, (AST.FuncDef, compiler.ScannedFunction)):
@@ -283,6 +274,11 @@ def show_tree_or_tokens(code, options):
 				print("private",type_,k)
 			else:
 				print(" public",type_,k)
+	monad >>= compiler.Scanner.do
+	if options["scan"]:
+		pprint(monad.value)
+		return
+
 
 
 if __name__ == '__main__':
