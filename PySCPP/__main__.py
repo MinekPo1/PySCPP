@@ -234,9 +234,9 @@ def main() -> None:
 				def flush(self) -> None:
 					pass
 
-			vm.SLVM.console = IO()
+			vm.SLVM.console = IO()  # type:ignore
 			the_vm = vm.SLVM(monad.value)
-			the_vm.console = IO()
+			the_vm.console = IO()  # type:ignore
 			the_vm.run()
 			if options["out"] is None:
 				quit()

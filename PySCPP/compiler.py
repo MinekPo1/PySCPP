@@ -73,6 +73,10 @@ class RegexBank:
 	"""
 	number = rec(r'-?([0-9]+(\.[0-9]*)?|\.[0-9]+)')
 	identifier = rec(r'[a-zA-Z_][a-zA-Z0-9_]*')
+	hex_number = rec(r'0x[0-9a-fA-F]+')
+	bin_number = rec(r'0b[01]+')
+	tri_number = rec(r'0t[0-2]+')
+	non_number = rec(r'0n[0-8]+')
 
 
 @dataclass
@@ -132,7 +136,6 @@ SingleCharacterTokens = {
 	"~": Token.Type.MEMORY_MODIFIER,
 	"$": Token.Type.MEMORY_MODIFIER,
 }
-
 
 CompoundTokens = {
 	"->": Token.Type.ARROW,
@@ -245,6 +248,14 @@ def tokenize(code: str, source: str, starting_pos: Pos | None = None) \
 			# decide token type
 			if RegexBank.number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, current, pointer.pos))
+			if RegexBank.hex_number.fullmatch(current):
+				tokens.append(Token(Token.Type.NUMBER, str(int(current,0)), pointer.pos))
+			if RegexBank.bin_number.fullmatch(current):
+				tokens.append(Token(Token.Type.NUMBER, str(int(current,0)), pointer.pos))
+			if RegexBank.tri_number.fullmatch(current):
+				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],3)), pointer.pos))
+			if RegexBank.non_number.fullmatch(current):
+				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],9)), pointer.pos))
 			elif current in Keywords:
 				tokens.append(Token(Keywords[current], current, pointer.pos))
 			elif RegexBank.identifier.fullmatch(current):
