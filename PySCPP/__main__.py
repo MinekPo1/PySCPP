@@ -17,7 +17,7 @@ class DirtyOptions(TypedDict):
 	tree: bool
 	scan: bool
 	run: bool
-	out: str
+	out: str | None
 	opt: int
 	lib: bool
 	objs: bool
@@ -34,7 +34,7 @@ class Options(TypedDict):
 	tree: bool
 	scan: bool
 	run: bool
-	out: str
+	out: str | None
 	opt: int
 	lib: bool
 	objs: bool
@@ -110,7 +110,7 @@ defaults: DirtyOptions = {
 	"tree": False,
 	"scan": False,
 	"run": False,
-	"out": "{}.slvm.txt",
+	"out": None,
 	"opt": 0,
 	"lib": False,
 	"objs": False,
@@ -200,7 +200,7 @@ def main() -> None:
 	options = parse_args()
 	if options["lib"]:
 		print("Available libraries:")
-		libs = []
+		libs: list[Path] = []
 		for i in compiler.INCLUDE_PATH:
 			libs.extend(i.glob("*.sc"))
 		for i in sorted(libs):
@@ -213,14 +213,15 @@ def main() -> None:
 	for fn in glob(options["input"]):
 		file = Path(fn)
 		code = file.read_text()
-		if options["tokens"] or options["tree"] or options["scan"] or options["objs"]:
+		if options["tokens"] or options["tree"] or options["scan"]\
+			or options["objs"]:
 			print(f"{fn}:")
 			show_tree_or_tokens(code, options)
 			continue
-		out,errors = compiler.compile(code, options["input"])
-		if errors:
+		monad = compiler.compile(code, options["input"])
+		if monad.errors:
 			if not options["silent"]:
-				display_errors(errors)
+				display_errors(monad.errors)
 			quit(1)
 		if options["run"]:
 			class IO:
@@ -234,12 +235,18 @@ def main() -> None:
 					pass
 
 			vm.SLVM.console = IO()
-			the_vm = vm.SLVM(out)
+			the_vm = vm.SLVM(monad.value)
 			the_vm.console = IO()
 			the_vm.run()
-			quit()
-		with open(options["out"].format(file.name.removesuffix(".sc")), "w") as f:
-			f.write(out)
+			if options["out"] is None:
+				quit()
+		with open(
+			(
+				options["out"] or "{}.slvm.txt"
+			).format(file.name.removesuffix(".sc")),
+			"w"
+		) as f:
+			f.write(monad.value)
 
 
 def show_tree_or_tokens(code, options):

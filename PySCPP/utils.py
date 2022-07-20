@@ -1,8 +1,16 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import TypeAlias
+from typing import Callable, Generic, TypeAlias, TypeVar
 
 
 Pos: TypeAlias = tuple[int, int, str]
+
+
+@dataclass
+class Warning:
+	type: str
+	message: str
+	stack: list[Pos] = field(default_factory=list)
 
 
 @dataclass
@@ -10,6 +18,44 @@ class Error:
 	message: str
 	pos: Pos
 	stack: list[Pos] = field(default_factory=list)
+
+
+T = TypeVar("T")
+TR = TypeVar("TR")
+
+
+class Monad(Generic[T]):
+	value: T
+	errors: list[Error]
+	warnings: list[Warning]
+	force: bool
+
+	def __init__(
+		self, value: T, errors: list[Error] | None = None,
+		warnings: list[Warning] | None = None, force: bool = False
+	):
+		if errors is None:
+			errors = []
+		if warnings is None:
+			warnings = []
+		self.value = value
+		self.errors = []
+		self.warnings = []
+		self.force = force
+
+	def bind(self, transform: Callable[[T],Monad[TR]]) -> Monad[TR]:
+		if self.errors and not self.force:
+			return self  # type:ignore
+		res = transform(self.value)
+		res.errors.extend(self.errors)
+		res.warnings.extend(self.warnings)
+		if self.force:
+			res.force = True
+		return res
+
+	# meta-programing: >>=
+	def __rshift__(self, transform: Callable[[T],Monad[TR]]) -> Monad[TR]:
+		return self.bind(transform)
 
 
 file_cache: dict[str,str] = {}

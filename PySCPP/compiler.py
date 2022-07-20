@@ -10,7 +10,7 @@ from string import printable
 
 from PySCPP import AST
 from PySCPP import utils
-from PySCPP.utils import Error
+from PySCPP.utils import Error, Monad
 from PySCPP import builtins
 
 Pos: TypeAlias = tuple[int, int, str]
@@ -1115,7 +1115,7 @@ class Parser:
 		self.head.children.append(for_)
 
 
-def parse(tokens: list[Token]) -> tuple[AST.Root,list[Error]]:
+def parse(tokens: list[Token]) -> Monad[AST.Root]:
 	"""
 		wrapper around :py:meth:`Parser.parse`
 
@@ -1125,7 +1125,7 @@ def parse(tokens: list[Token]) -> tuple[AST.Root,list[Error]]:
 	parser = Parser(tokens, tokens[0].pos[2])
 	parser.parse()
 
-	return parser.root, parser.errors
+	return Monad(parser.root, parser.errors)
 
 
 @dataclass
@@ -1240,7 +1240,7 @@ class Scanner:
 	def namespace(self) -> str:
 		return "::".join([i[0] for i in self.namespace_stack if i[0]])
 
-	def scan(self) -> tuple[ScannedRoot,list[Error]]:
+	def scan(self) -> ScannedRoot:
 		"""
 			Main function of the scanner.
 			After scanning the tree it returns it along with errors
@@ -1262,7 +1262,15 @@ class Scanner:
 						continue
 					# else:
 					# 	print("Todo:",k)
-		return cast(Scanner.ScannedRoot,self.tree), self.errors
+		return cast(Scanner.ScannedRoot,self.tree)
+
+	@classmethod
+	def do(cls, root: AST.Root) -> Monad[ScannedRoot]:
+		"""
+			wrapper around :py:meth:`Scanner.scan`
+		"""
+		scanner = Scanner(root)
+		return Monad(scanner.scan(), scanner.errors)
 
 	def jns(self, ns1: str, ns2: str | None = None) -> str:
 		if ns2 is None:
@@ -1350,15 +1358,15 @@ class Scanner:
 		# parse the file
 		with path.open() as f:
 			tokens = tokenize(f.read(),str(path))
-			root, errors = parse(tokens)
-			for error in errors:
+			monad = parse(tokens)
+			for error in monad.errors:
 				error.stack.insert(0,include.pos)
-			self.errors.extend(errors)
+			self.errors.extend(monad.errors)
 
 			# place the contents into root
-			for include in root.includes:
+			for include in monad.value.includes:
 				self.scan_include(include)
-			for i in root.children:
+			for i in monad.value.children:
 				self.tree.children.insert(0,i)
 
 	def scan_auto(self, elm: AST.Element):
@@ -1497,7 +1505,10 @@ class Scanner:
 			func = self.get(call.name)
 			if func is None:
 				if call.name == "0main":
-					raise AssertionError(f"Name error: \"{call.name}\". Note: main function cannot be called.")
+					raise AssertionError(
+						f"Name error: \"{call.name}\"."
+						" Note: main function cannot be called."
+					)
 				# print(*self.objects)
 				raise AssertionError(f"Name error: \"{call.name}\"")
 			assert isinstance(self.objects[func], ScannedFunction),\
@@ -1719,7 +1730,7 @@ class Assembler:
 		self.ret_as_jump = None
 		self.op_vars = []
 
-	def assemble(self) -> tuple[str,list[Error]]:
+	def assemble(self) -> str:
 		"""
 		This function generates the assembly as a string
 		and returns it with a list of errors
@@ -1784,7 +1795,12 @@ class Assembler:
 			if line.startswith(":"):
 				self.lines[i] = f"{self.labels.get(line,0)}"
 
-		return "\n".join(self.lines), self.errors
+		return "\n".join(self.lines)
+
+	@classmethod
+	def do(cls, tree: Scanner.ScannedRoot) -> Monad[str]:
+		asm = cls(tree)
+		return Monad(asm.assemble(),asm.errors)
 
 	def post_asm_opt(self):
 		for i,_ in enumerate(self.lines):
@@ -1995,8 +2011,7 @@ class Assembler:
 		self.assemble_auto(ref.expr)
 
 
-def compile(code: str, source: str, force: bool = False)\
-	-> tuple[str,list[Error]]:
+def compile(code: str, source: str, force: bool = False):
 	"""
 		Preform the full compilation procedure, unless errors arise along the way
 
@@ -2004,22 +2019,11 @@ def compile(code: str, source: str, force: bool = False)\
 		:param source: The source file name or path
 		:param force: Force the compilation to continue even if errors arise.
 			Can and probably will cause undefined behaviour.
-		:return: A tuple of the assembly code and a list of errors
+		:return: A monad containing the compiled code and diagnostics
 	"""
 	tokens = tokenize(code, source)
-	tree, errors = parse(tokens)
-	if errors and not force:
-		return "", errors
-	if force:
-		p_errors = errors
-	tree, errors = Scanner(tree).scan()
-	if force:
-		errors.extend(p_errors)  # type:ignore
-	if errors and not force:
-		return "", errors
-	if force:
-		p_errors = errors
-	asm, errors = Assembler(tree).assemble()
-	if force:
-		errors.extend(p_errors)  # type:ignore
-	return asm, errors
+	monad = Monad(tokens, force=force)
+	monad >>= parse
+	monad >>= Scanner.do
+	monad >>= Assembler.do
+	return monad
