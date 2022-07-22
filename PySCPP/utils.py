@@ -5,6 +5,8 @@ from typing import Callable, Generic, TypeAlias, TypeVar
 
 Pos: TypeAlias = tuple[int, int, str]
 
+VERBOSITY: int = 0
+
 
 @dataclass
 class Warning:
@@ -39,8 +41,8 @@ class Monad(Generic[T]):
 		if warnings is None:
 			warnings = []
 		self.value = value
-		self.errors = []
-		self.warnings = []
+		self.errors = errors
+		self.warnings = warnings
 		self.force = force
 
 	def bind(self, transform: Callable[[T],Monad[TR]]) -> Monad[TR]:
@@ -98,3 +100,22 @@ def display_errors(errors: list[Error]) -> None:
 			print("   ",'\t'*tabs," "*(error.pos[1]-tabs-4),"^")
 		except IndexError:
 			print(f"{error.pos[0]+1: >2}| ","<EOF>")
+
+
+def log(*things: object, level: int = 2) -> None:
+	"""
+	Logs things to the console.
+	:param things:
+	:param level: The level of the log. 0 is the most important.
+	"""
+	if level > VERBOSITY:
+		return
+	print(*things)
+
+
+def debug(*things: object):
+	log(*things, level=3)
+
+
+def info(*things: object):
+	log(*things, level=1)

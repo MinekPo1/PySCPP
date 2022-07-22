@@ -164,6 +164,10 @@ class SLVM:
 		except ValueError:
 			return 0.0
 
+	@_float_a.setter
+	def _float_a(self, value: float) -> None:
+		self._a_reg = value
+
 	@property
 	def _current(self):
 		return self._code[self._code_ptr - 1]
@@ -335,72 +339,63 @@ class SLVM:
 	def _addWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] += self._float_a
-		self._a_reg = self._memory[self._var_lookup[var]]
+		self._float_a += self._memory.floats[self._var_lookup[var]]
 
 	@_wrap("subWithVar")
 	def _subWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] -= self._float_a
-		self._a_reg = self._memory[self._var_lookup[var]]
+		self._float_a -= self._memory.floats[self._var_lookup[var]]
 
 	@_wrap("mulWithVar")
 	def _mulWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] *= self._float_a
-		self._a_reg = self._memory[self._var_lookup[var]]
+		self._float_a *= self._memory.floats[self._var_lookup[var]]
 
 	@_wrap("divWithVar")
 	def _divWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] /= self._float_a
-		self._a_reg = self._memory[self._var_lookup[var]]
+		self._float_a /= self._memory.floats[self._var_lookup[var]]
 
 	@_wrap("modWithVar")
 	def _modWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] %= self._float_a
-		self._a_reg = self._memory[self._var_lookup[var]]
+		self._float_a %= self._memory.floats[self._var_lookup[var]]
 
 	@_wrap("bitwiseLsfWithVar")
 	def _bitwiseLsfWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] = float(
+		self._float_a = float(
 			int(self._float_a) << int(self._memory.floats[self._var_lookup[var]])
 		)
-		self._a_reg = self._memory[self._var_lookup[var]]
 
 	@_wrap("bitwiseRsfWithVar")
 	def _bitwiseRsfWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] = float(
+		self._float_a = float(
 			int(self._float_a) >> int(self._memory.floats[self._var_lookup[var]])
 		)
-		self._a_reg = self._memory[self._var_lookup[var]]
 
 	@_wrap("bitwiseAndWithVar")
 	def _bitwiseAndWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] = float(
+		self._float_a = float(
 			int(self._float_a) & int(self._memory.floats[self._var_lookup[var]])
 		)
-		self._a_reg = self._memory[self._var_lookup[var]]
 
 	@_wrap("bitwiseOrWithVar")
 	def _bitwiseOrWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._memory.floats[self._var_lookup[var]] = float(
+		self._float_a = float(
 			int(self._float_a) | int(self._memory.floats[self._var_lookup[var]])
 		)
-		self._a_reg = self._memory[self._var_lookup[var]]
 
 	@_wrap("print")
 	def _print(self):
@@ -672,8 +667,8 @@ class SLVM:
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._graphic_buffer.append(
-			"drawText " +
-			self._memory.strings[self._var_lookup[var]]
+			"drawText "
+			+ self._memory.strings[self._var_lookup[var]]
 		)
 
 	@_wrap("loadAtVarWithOffset")
@@ -765,8 +760,8 @@ class SLVM:
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._graphic_buffer.append(
-			"setStrokeWidth " +
-			str(self._memory.floats[self._var_lookup[var]])
+			"setStrokeWidth "
+			+ str(self._memory.floats[self._var_lookup[var]])
 		)
 
 	@_wrap("inc")

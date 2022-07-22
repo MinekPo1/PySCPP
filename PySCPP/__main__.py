@@ -1,6 +1,6 @@
 from sys import argv
 from pprint import pprint
-from PySCPP import compiler, vm, AST
+from PySCPP import compiler, vm, AST, utils
 from PySCPP.utils import display_errors, Monad
 from typing import TypedDict
 from pathlib import Path
@@ -22,6 +22,8 @@ class DirtyOptions(TypedDict):
 	lib: bool
 	objs: bool
 	graphics: bool
+	verbose: int
+	debug: bool
 
 
 class Options(TypedDict):
@@ -39,6 +41,8 @@ class Options(TypedDict):
 	lib: bool
 	objs: bool
 	graphics: bool
+	verbose: int
+	debug: bool
 
 
 def print_help():
@@ -68,6 +72,9 @@ def print_help():
 	)
 	print("    --lib, -l     Show the list of available libraries and exit.")
 	print("    --graph, -g   Enable graphics mode in the vm.")
+	print("    --verbose, -v Show more info. Can be entered multiple times.")
+	print("    --obj         Show the list of available objects and exit.")
+	print("    --debug, -D   Place debug symbols in the output.")
 	quit(0)
 
 
@@ -89,11 +96,15 @@ flags = {
 	"--lib": "lib",
 	"l": "lib",
 	"--objs": "objs",
+	"--debug": "debug",
+	"D": "debug",
 }
 
 multi_flags = {
 	"--opt": "opt",
 	"O": "opt",
+	"v": "verbose",
+	"--verbose": "verbose",
 }
 
 options = {
@@ -115,6 +126,8 @@ defaults: DirtyOptions = {
 	"lib": False,
 	"objs": False,
 	"graphics": False,
+	"verbose": 0,
+	"debug": False,
 }
 
 
@@ -210,6 +223,8 @@ def main() -> None:
 	if options["graphics"]:
 		vm.GRAPHICS = True
 	compiler.OPT = options["opt"]
+	compiler.DEBUG = options["debug"]
+	utils.VERBOSITY = options["verbose"]
 	for fn in glob(options["input"]):
 		file = Path(fn)
 		code = file.read_text()
@@ -258,10 +273,17 @@ def show_tree_or_tokens(code, options):
 	monad = Monad(tokens)
 	monad >>= compiler.parse
 	if options["tree"]:
+		if monad.errors:
+			display_errors(monad.errors)
+			return
 		pprint(monad.value)
 		return
 	if options["objs"]:
 		scanner = compiler.Scanner(monad.value)
+		scanner.scan()
+		# if scanner.errors:
+		# 	display_errors(scanner.errors)
+		# 	return
 		for k,v in scanner.objects.items():
 			type_ = "    "
 			if isinstance(v, (AST.FuncDef, compiler.ScannedFunction)):
@@ -276,9 +298,11 @@ def show_tree_or_tokens(code, options):
 				print(" public",type_,k)
 	monad >>= compiler.Scanner.do
 	if options["scan"]:
+		if monad.errors:
+			display_errors(monad.errors)
+			return
 		pprint(monad.value)
 		return
-
 
 
 if __name__ == '__main__':

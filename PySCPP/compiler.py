@@ -10,13 +10,15 @@ from string import printable
 
 from PySCPP import AST
 from PySCPP import utils
-from PySCPP.utils import Error, Monad
+from PySCPP.utils import Error, Monad, debug, info  # log
 from PySCPP import builtins
+from copy import deepcopy
 
 Pos: TypeAlias = tuple[int, int, str]
 
 
 OPT = 0
+DEBUG = False
 """
 .. table:: ``OPT`` value and effect on the compiler
 	:widths: auto
@@ -69,7 +71,7 @@ class CodePointer:
 
 class RegexBank:
 	"""
-		Class for storing regexes, so they don't flood the namespace.
+		Class for storing regex patterns, so they don't flood the namespace.
 	"""
 	number = rec(r'-?([0-9]+(\.[0-9]*)?|\.[0-9]+)')
 	identifier = rec(r'[a-zA-Z_][a-zA-Z0-9_]*')
@@ -253,9 +255,11 @@ def tokenize(code: str, source: str, starting_pos: Pos | None = None) \
 			if RegexBank.bin_number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, str(int(current,0)), pointer.pos))
 			if RegexBank.tri_number.fullmatch(current):
-				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],3)), pointer.pos))
+				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],3)),
+					pointer.pos))
 			if RegexBank.non_number.fullmatch(current):
-				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],9)), pointer.pos))
+				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],9)),
+					pointer.pos))
 			elif current in Keywords:
 				tokens.append(Token(Keywords[current], current, pointer.pos))
 			elif RegexBank.identifier.fullmatch(current):
@@ -401,7 +405,7 @@ class Parser:
 		"""
 		if not(condition):
 			stack = [c.pos for c in self.stack[1:]]
-
+			debug("error:", message)
 			try:
 				self.errors.append(Error(message, self.token.pos,stack))
 			except AssertionError:
@@ -481,19 +485,15 @@ class Parser:
 			# place the define in the root
 			assert isinstance(self.container, AST.Root), "#define must be in root"
 			# lex the value
-			print(" ".join(self.token.value.split()[2:]))
 			tokens = tokenize(
 				" ".join(self.token.value.split()[2:]), self.token.pos[2], self.token.pos
 			)
-			print(tokens)
 			# parse the value
 			sub_scan = type(self)(tokens, self.token.pos[2], self.root)
 			value = sub_scan.parse_expression()
 			self.errors.extend([
 				(i,i.stack.append(self.token.pos))[0] for i in sub_scan.errors
 			])
-
-			print(self.token.value.split()[1],value)
 
 			self.definitions[self.token.value.split()[1]] = value
 
@@ -510,7 +510,7 @@ class Parser:
 		# we expect a `namespace` keyword
 		# then optionally a `public` or `private` keyword
 		# then a name
-		# and then the body
+		# then either `is` or/and the body
 
 		# create the namespace
 		# we will update it as we go
@@ -535,17 +535,22 @@ class Parser:
 
 		assert self.token.type == Token.Type.IDENTIFIER, "Expected namespace name"
 
+		debug("ns", self.token.value)
 		namespace.name = self.token.value
 
 		self.consume_token()
 
 		if self.token.value == "is":
+			debug("namespace is")
 			self.consume_token()
 			assert self.token.type == Token.Type.IDENTIFIER, "Expected namespace name"
 			namespace.is_ = self.token.value
 			self.consume_token()
 			# expect semicolon
 			assert self.token.value == ";", "Expected semicolon"
+			# self.consume_token()
+			self.head.children.append(namespace)
+			return
 
 		assert self.token.type == Token.Type.BRACKET_OPEN, "Expected namespace body"
 		self.consume_token()
@@ -684,6 +689,7 @@ class Parser:
 		# - a return statement
 
 		if self.token.type == Token.Type.KEYWORD:
+			debug("kw:", self.token.value)
 			if self.token.value == "return":
 				self.parse_return()
 				# expect a semi-colon
@@ -697,6 +703,7 @@ class Parser:
 				self.parse_while()
 				return
 			if self.token.value == "for":
+				debug("for")
 				self.parse_for()
 				return
 
@@ -763,8 +770,8 @@ class Parser:
 		if self.token.value == '=':
 			self.consume_token()
 			var.value = self.parse_expression()
+			self.consume_token()
 
-		# self.consume_token()
 		self.assert_(self.token.value == ';', "Expected semicolon")
 
 		self.head.children.append(var)
@@ -824,9 +831,14 @@ class Parser:
 			var.value = AST.Literal(var.pos, 1)
 
 		else:
+			if self.token.type == Token.Type.OPERATOR:
+				var.modifier = self.token.value
+				self.consume_token()
+
 			self.assert_(self.token.value == '=', "Expected equals")
 			self.consume_token()
 			var.value = self.parse_expression()
+			self.consume_token()
 
 		# self.consume_token()
 		self.assert_(self.token.value == ';', "Expected semicolon")
@@ -849,12 +861,14 @@ class Parser:
 
 		if self.token.value != ')':
 			func.args.append(self.parse_expression())
-			# self.consume_token()
+			self.consume_token()
 			while self.token.value == ',':
-				self.consume_token()
+				# self.consume_token()
 				func.args.append(self.parse_expression())
+				self.consume_token()
 
-		self.assert_(self.token.value == ')', "Expected closing parenthesis")
+		self.assert_(self.token.value == ')', "Expected closing parenthesis, got "
+				f"`{self.token.value}`")
 		self.consume_token()
 
 		self.head.children.append(func)
@@ -882,6 +896,7 @@ class Parser:
 				and self.token.type == Token.Type.IDENTIFIER:
 				self.parse_func_call()
 				a = self.head.children.pop()  # type:ignore
+				self.tokens_i -= 1
 
 		for _ in [0]:
 			if self.token.type in {Token.Type.IDENTIFIER, Token.Type.MEMORY_MODIFIER}:
@@ -940,10 +955,12 @@ class Parser:
 		return a
 
 	def parse_oper(self, a):
-		if self.token.type == Token.Type.OPERATOR:
+		if self.token_view[1].type == Token.Type.OPERATOR:
+			self.consume_token()
 			op = self.token.value
 			self.consume_token()
 			b = self.parse_expression()
+			self.tokens_i -= 1
 			a = AST.Operation(pos=a.pos, op=op, left=a, right=b)
 			# check if the weight of the operation is higher than the current one
 			if isinstance(b, AST.Operation) and oper_weight[b.op] < oper_weight[op]:
@@ -1099,11 +1116,11 @@ class Parser:
 		assert self.token.value == 'from', "Expected 'from'"
 		self.consume_token()
 		for_.start = self.parse_expression()
-		# self.consume_token()
+		self.consume_token()
 		assert self.token.value == 'to', "Expected 'to'"
 		self.consume_token()
 		for_.end = self.parse_expression()
-		# self.consume_token()
+		self.consume_token()
 		if self.token.value == 'by':
 			self.consume_token()
 			for_.step = self.parse_expression()
@@ -1111,6 +1128,8 @@ class Parser:
 		assert self.token.value == ')', "Expected closing parenthesis"
 		self.consume_token()
 		self.stack.append(for_)
+
+		debug("for")
 
 		if self.token.value == '{':
 			self.consume_token()
@@ -1271,8 +1290,7 @@ class Scanner:
 						continue
 					if isinstance(v, (AST.Namespace,ScannedFunction)):
 						continue
-					# else:
-					# 	print("Todo:",k)
+
 		return cast(Scanner.ScannedRoot,self.tree)
 
 	@classmethod
@@ -1289,7 +1307,6 @@ class Scanner:
 		return f"{ns1}::{ns2}".removeprefix("::")
 
 	def get(self, name: str, namespace: str | None = None) -> str | None:
-		# print("get",name,namespace)
 		name_l = name.split("::")
 		ns = self.namespace if namespace is None else namespace
 		# check if the name is in the current namespace
@@ -1297,17 +1314,14 @@ class Scanner:
 				not self.is_private.get(f"{ns}::{name_l[0]}") or namespace is None
 			):
 			if len(name_l) == 1:
-				# print("return here:",self.jns(ns, name_l[0]))
 				return self.jns(ns, name_l[0])
 			r = self.get(
 				"::".join(name_l[1:]),
 				f"{ns}::{name_l[0]}".removeprefix("::")
 			)
 			if r is not None:
-				# print("return",ns,r)
 				return self.jns(ns,r)
 		if namespace is not None:
-			# print("nope")
 			return None
 		# check if the name is in namespaces upwards
 		while "::" in ns:
@@ -1327,10 +1341,6 @@ class Scanner:
 			"::".join(name_l[1:]),
 			name_l[0]
 		)
-		# if r is None:
-		# 	print("nope")
-		# else:
-		# 	print(r)
 		return r
 
 	@auto(AST.Root)
@@ -1347,7 +1357,6 @@ class Scanner:
 	def scan_include(self, include: AST.Include):
 		# locate the file
 		include_val = include.value
-		# print(include_val)
 		if include_val in self.tree.resolved_includes:
 			return  # already included
 		self.tree.resolved_includes.append(include_val)
@@ -1383,14 +1392,14 @@ class Scanner:
 	def scan_auto(self, elm: AST.Element):
 		# assert elm.__class__ in self.auto, f"No auto-scanner for {elm.__class__}"
 		if elm.__class__ not in self.auto:
-			print(f"No auto-scanner for {elm.__class__}")
+			info(f"No auto-scanner for {elm.__class__}")
 			return
 		return self.auto[elm.__class__](self, elm)
 
 	def scan_container(self, elm: AST.Container):
 		p_bucket = self.bucket
 		self.bucket = []
-		namespaces = []
+		namespaces: AST.Namespace = []
 		for child in elm.children:
 			self.scan_auto(child)
 			if isinstance(child, AST.Namespace):
@@ -1470,8 +1479,32 @@ class Scanner:
 		if namespace.name in self.objects:
 			raise AssertionError(f"Duplicate namespace {namespace.name}")
 		self.objects[self.jns(namespace.name)] = namespace
+		if namespace.private:
+			self.is_private[self.jns(namespace.name)]
 		with self.Namespace(self, namespace, namespace.name):  # type: ignore
 			self.scan_container(namespace)  # type: ignore
+
+		if namespace.is_ is not None:
+			debug(f"{namespace.name} -> {namespace.is_}")
+			# find the namespace
+			ns = self.objects.get(self.get(namespace.is_))  # type: ignore
+			assert isinstance(ns, AST.Namespace), f"{namespace.is_} is not a namespace"
+			# convert all inner children to use the new namespace
+			copy_queue: list[AST.Element] = []
+			for child in ns.children:
+				child = deepcopy(child)  # make a copy to avoid changing the original
+				copy_queue.append(child)
+
+			for item in copy_queue:
+				self.bucket.append(item)
+				if isinstance(item, AST.VarDef):
+					item.var.name = item.var.name.replace(ns.name, namespace.name, 1)
+					# register the function
+					self.objects[self.jns(item.var.name)] = item
+					continue
+				if isinstance(item, AST.FuncDef):
+					self.rescan_func(namespace, ns, copy_queue, item)
+					continue
 		# dump
 		for child in namespace.children:
 			self.bucket.append(child)
@@ -1484,6 +1517,14 @@ class Scanner:
 				for g_child in child.children:
 					if isinstance(g_child, AST.VarDef):
 						g_child.var.name = f"{namespace.name}::{g_child.var.name}"
+
+	def rescan_func(self, namespace, ns, copy_queue, item):
+		item.name = item.name.replace(ns.name, namespace.name, 1)
+		debug(f"func {item.name}", ns.name, namespace.name)
+		self.objects[self.jns(item.name)] = item
+		for arg in item.args:
+			arg.name.replace(ns.name, namespace.name, 1)
+		copy_queue.extend(iter(item.children))
 
 	@auto(AST.VarDef)
 	@_wrapS
@@ -1514,13 +1555,12 @@ class Scanner:
 
 		if func is None or func not in self.objects:
 			func = self.get(call.name)
-			if func is None:
+			if func is None or func not in self.objects:
 				if call.name == "0main":
 					raise AssertionError(
-						f"Name error: \"{call.name}\"."
+						"Name error: \"main\"."
 						" Note: main function cannot be called."
 					)
-				# print(*self.objects)
 				raise AssertionError(f"Name error: \"{call.name}\"")
 			assert isinstance(self.objects[func], ScannedFunction),\
 				f"\"{call.name}\" is not a function"
@@ -1528,13 +1568,12 @@ class Scanner:
 				f"\"{call.name}\" cannot be bound to {len(call.args)} arguments."
 			)
 
-		# print("call", call.name, func)
 		if func in self.accessed:
 			self.accessed[func] += 1
 		else:
 			self.accessed[func] = 1
 		if func in self.to_be_checked:
-			print(f"{call.name} is called for the #1 time")
+			debug(f"{call.name} is called for the #1 time")
 			# set namespace to the function's namespace
 			pos = self.objects[func].pos  # type:ignore
 			with self.Namespace(self, pos, func, True):
@@ -1558,7 +1597,7 @@ class Scanner:
 	def scan_var(self, var: AST.Var):
 		name = self.get(var.name)
 		assert name is not None, f"Name error: \"{var.name}\""
-		print(name)
+		debug("name=",name)
 		assert self.objects.get(name) is not None, f"Name error: \"{var.name}\""
 		var.name = name
 		if var.name in self.accessed:
@@ -1728,6 +1767,8 @@ class Assembler:
 	op_vars: list[str]
 	op_depth: int
 
+	end: Callable[[], None]
+
 	auto: Auto[Assembler] = Auto()
 
 	def __init__(self, tree: Scanner.ScannedRoot) -> None:
@@ -1749,13 +1790,12 @@ class Assembler:
 		:return: A tuple of a string containing the assembly and a list of errors.
 		"""
 
+		self.end = lambda: None
+		if DEBUG:
+			self.init_debug()
 		self.var_lookup = {}
 		self.sng = short_name_generator(prefix="%")
-		if OPT == 0:
-			self.ovg = short_name_generator(prefix="o")
-		else:
-			# make the operation variables easier to understand if OPT > 0
-			self.ovg = short_name_generator(prefix="%Oper_")
+		self.ovg = short_name_generator(prefix="o" if OPT == 0 else "%Oper_")
 		self.op_depth = 0
 
 		main_id, main = self.find_main(self.tree)
@@ -1786,10 +1826,12 @@ class Assembler:
 					and not child.inline:
 				# create label
 				self.labels[f":{child.name}"] = len(self.lines)
+				end = self.symbol(child.name)
 				if f":{child.name}" in self.labels_to_be_defined:
 					self.labels_to_be_defined.remove(f":{child.name}")
 				self.assemble_container(child)
 				if self.lines[-1] != "ret":
+					end()
 					self.lines.append("ret")
 
 		for label in self.labels_to_be_defined:
@@ -1807,6 +1849,55 @@ class Assembler:
 				self.lines[i] = f"{self.labels.get(line,0)}"
 
 		return "\n".join(self.lines)
+
+	def init_debug(self):
+		self.lines.append("lid")
+		self.lines.append("main")
+		self.lines.append("storeAtVar")
+		self.lines.append("$SYMBOL")
+		self.lines.append("lid")
+		self.lines.append("0")
+
+	def symbol(self,name: str) -> Callable[[],None]:
+		if DEBUG:
+			if self.op_depth == len(self.op_vars):
+				self.op_vars.append(next(self.ovg))
+			p_var = self.op_vars[self.op_depth]
+			self.op_depth += 1
+			if self.op_depth == len(self.op_vars):
+				self.op_vars.append(next(self.ovg))
+			var = self.op_vars[self.op_depth]
+			self.lines.append("storeAtVar")
+			self.lines.append(var)
+			self.lines.append("loadAtVar")
+			self.lines.append("$SYMBOL")
+			self.lines.append("storeAtVar")
+			self.lines.append(p_var)
+			self.lines.append("ldi")
+			self.lines.append(name)
+			self.lines.append("storeAtVar")
+			self.lines.append("$SYMBOL")
+			self.lines.append("loadAtVar")
+			self.lines.append(var)
+
+			def end():
+				if self.op_depth == len(self.op_vars):
+					self.op_vars.append(next(self.ovg))
+				var = self.op_vars[self.op_depth]
+				self.lines.append("storeAtVar")
+				self.lines.append(var)
+				self.lines.append("loadAtVar")
+				self.lines.append(p_var)
+				self.lines.append("storeAtVar")
+				self.lines.append("$SYMBOL")
+				self.lines.append("loadAtVar")
+				self.lines.append(var)
+				self.end = p_end
+
+			p_end = self.end
+			self.end = end
+			return end
+		return lambda: None
 
 	@classmethod
 	def do(cls, tree: Scanner.ScannedRoot) -> Monad[str]:
@@ -1862,7 +1953,7 @@ class Assembler:
 
 	def assemble_auto(self, elm: AST.Element) -> None:
 		if type(elm) not in self.auto._functions:
-			print(f"{type(elm)} is not auto-assembled")
+			info(f"{type(elm)} is not auto-assembled")
 			return
 		self.auto._functions[type(elm)](self,elm)  # type:ignore
 
@@ -1922,6 +2013,7 @@ class Assembler:
 
 	@_wrapA
 	def assemble_inline_function(self, call: AST.FuncCall) -> None:
+		end = self.symbol(call.name)
 		func = self.functions[call.name]
 		# bind arguments
 		for arg, val in zip(func.args, call.args):
@@ -1951,6 +2043,7 @@ class Assembler:
 		if self.ret_as_jump in self.labels_to_be_defined:
 			self.labels_to_be_defined.remove(self.ret_as_jump)
 		self.ret_as_jump = p_raj
+		end()
 
 	@_wrapA
 	@auto(AST.Literal)
@@ -1962,6 +2055,7 @@ class Assembler:
 	def assemble_return(self, ret: AST.Return) -> None:
 		if ret.value is not None:
 			self.assemble_auto(ret.value)
+		self.end()
 		if self.ret_as_jump is None:
 			self.lines.append("ret")
 			return
@@ -2020,6 +2114,94 @@ class Assembler:
 	@auto(AST.DefineRef)
 	def assemble_define_ref(self, ref: AST.DefineRef) -> None:
 		self.assemble_auto(ref.expr)
+
+	@auto(AST.For)
+	@_wrapA
+	def assemble_for(self, for_: AST.For) -> None:
+		label_start = f":for:{len(self.lines)}"
+		label_end = f":for_end:{len(self.lines)}"
+		var = self.var(for_.var)
+		self.assemble_auto(for_.start)
+		self.lines.append("storeAtVar")
+		self.lines.append(var)
+
+		# create end and step vars
+		if len(self.op_vars) == self.op_depth:
+			self.op_vars.append(next(self.ovg))
+		step_var = self.op_vars[self.op_depth]
+		self.op_depth += 1
+		if len(self.op_vars) == self.op_depth:
+			self.op_vars.append(next(self.ovg))
+		end_var = self.op_vars[self.op_depth]
+
+		self.op_depth += 1
+		self.assemble_auto(for_.end)
+		self.lines.append("storeAtVar")
+		self.lines.append(end_var)
+		if for_.step is not None:
+			self.assemble_auto(for_.step)
+		else:
+			self.lines.append("ldi")
+			self.lines.append("1")
+		self.lines.append("storeAtVar")
+		self.lines.append(step_var)
+
+		# condition
+		self.labels[label_start] = len(self.lines)
+		# check if we need to increment
+		self.lines.append("loadAtVar")
+		self.lines.append(var)
+		self.lines.append("subWithVar")
+		self.lines.append(end_var)
+		self.lines.append("jt")
+		self.lines.append(label_end)
+
+		self.assemble_container(for_)
+
+		self.lines.append("loadAtVar")
+		self.lines.append(var)
+		self.lines.append("addWithVar")
+		self.lines.append(step_var)
+		self.lines.append("storeAtVar")
+		self.lines.append(var)
+
+		self.lines.append("jmp")
+		self.lines.append(label_start)
+
+		self.labels[label_end] = len(self.lines)
+		self.op_depth -= 1
+
+	@auto(AST.VarSet)
+	def assemble_var_set(self, var_set: AST.VarSet) -> None:
+		if isinstance(var_set.l_value, AST.Var):
+			if var_set.modifier == "++":
+				self.lines.append("inc")
+				self.lines.append(self.var(var_set.l_value.name))
+				return
+			elif var_set.modifier == "--":
+				self.lines.append("dec")
+				self.lines.append(self.var(var_set.l_value.name))
+				return
+		elif var_set.modifier in {"--","++"}:
+			var_set.modifier = var_set.modifier[0]
+
+		self.assemble_auto(var_set.value)
+		if var_set.modifier is not None:
+			if self.op_depth == len(self.op_vars):
+				self.op_vars.append(next(self.ovg))
+			op_var = self.op_vars[self.op_depth]
+			self.op_depth += 1
+			self.lines.append("storeAtVar")
+			self.lines.append(op_var)
+			self.assemble_auto(var_set.value)
+			self.lines.append(oper_map[var_set.modifier])
+			self.lines.append(op_var)
+
+		if isinstance(var_set.l_value, AST.Var):
+			self.lines.append("storeAtVar")
+			self.lines.append(self.var(var_set.l_value.name))
+		else:
+			info("TODO: implement l_value")
 
 
 def compile(code: str, source: str, force: bool = False):
