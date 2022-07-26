@@ -19,7 +19,7 @@ After cloning the repo, execute the `PySCPP/PySCPP` as a module with python:
 - 🟢 Compiler
   - 🟢 Parser & Lexer
   - 🟢 Code optimization
-  - 🟠 Assembly
+  - 🟢 Assembly
 - 🟠 VM
   - 🟢 instructions
   - ⚫ graphics
