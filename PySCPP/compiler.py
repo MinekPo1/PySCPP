@@ -1930,11 +1930,11 @@ class Assembler:
 		return "\n".join(self.lines)
 
 	def init_debug(self):
-		self.lines.append("lid")
+		self.lines.append("ldi")
 		self.lines.append("main")
 		self.lines.append("storeAtVar")
 		self.lines.append("$SYMBOL")
-		self.lines.append("lid")
+		self.lines.append("ldi")
 		self.lines.append("0")
 
 	def symbol(self,name: str) -> Callable[[],None]:
