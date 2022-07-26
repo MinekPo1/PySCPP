@@ -250,14 +250,14 @@ def tokenize(code: str, source: str, starting_pos: Pos | None = None) \
 			# decide token type
 			if RegexBank.number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, current, pointer.pos))
-			if RegexBank.hex_number.fullmatch(current):
+			elif RegexBank.hex_number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, str(int(current,0)), pointer.pos))
-			if RegexBank.bin_number.fullmatch(current):
+			elif RegexBank.bin_number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, str(int(current,0)), pointer.pos))
-			if RegexBank.tri_number.fullmatch(current):
+			elif RegexBank.tri_number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],3)),
 					pointer.pos))
-			if RegexBank.non_number.fullmatch(current):
+			elif RegexBank.non_number.fullmatch(current):
 				tokens.append(Token(Token.Type.NUMBER, str(int(current[2:],9)),
 					pointer.pos))
 			elif current in Keywords:
@@ -755,8 +755,10 @@ class Parser:
 
 		self.consume_token()
 
-		if self.token.type == Token.Type.MEMORY_MODIFIER:
-			var.var.memory_specifier = self.token.value
+		while self.token.type == Token.Type.MEMORY_MODIFIER:
+			if var.var.memory_specifier is None:
+				var.var.memory_specifier = ""
+			var.var.memory_specifier += self.token.value
 			self.consume_token()
 
 		assert self.token.type == Token.Type.IDENTIFIER, "Expected variable name"
@@ -766,7 +768,7 @@ class Parser:
 		if self.token.type == Token.Type.SQ_BRACKET_OPEN:
 			self.consume_token()
 			var.offset = self.parse_expression()
-			# self.consume_token()
+			self.consume_token()
 			self.assert_(self.token.value == ']', "Expected closing square bracket")
 			self.consume_token()
 
@@ -821,7 +823,7 @@ class Parser:
 		if self.token.type == Token.Type.SQ_BRACKET_OPEN:
 			self.consume_token()
 			var.offset = self.parse_expression()
-			# self.consume_token()
+			self.consume_token()
 			self.assert_(self.token.type == Token.Type.SQ_BRACKET_CLOSE,
 				"Expected closing square bracket")
 			self.consume_token()
@@ -892,18 +894,24 @@ class Parser:
 
 		a: AST.Expression | None = None
 
-		# check if we can scan ahead
-		if len(self.tokens) > self.tokens_i:
-			if self.token_view[1].type == Token.Type.MEMBER_SELECT:
-				self.parse_member_select()
-
-			if self.token_view[1].type == Token.Type.PAREN_OPEN \
-				and self.token.type == Token.Type.IDENTIFIER:
-				self.parse_func_call()
-				a = self.head.children.pop()  # type:ignore
-				self.tokens_i -= 1
-
 		for _ in [0]:
+			# check if we can scan ahead
+			if len(self.tokens) > self.tokens_i:
+				if self.token_view[1].type == Token.Type.MEMBER_SELECT:
+					self.parse_member_select()
+
+				if self.token_view[1].type == Token.Type.SQ_BRACKET_OPEN \
+					and self.token.type == Token.Type.IDENTIFIER:
+					a = self.parse_array_ref()
+					break
+
+				if self.token_view[1].type == Token.Type.PAREN_OPEN \
+					and self.token.type == Token.Type.IDENTIFIER:
+					self.parse_func_call()
+					a = self.head.children.pop()  # type:ignore
+					self.tokens_i -= 1
+					break
+
 			if self.token.type in {Token.Type.IDENTIFIER, Token.Type.MEMORY_MODIFIER}:
 				if self.token.value in self.definitions:
 					a = AST.DefineRef(self.token.pos,self.definitions[self.token.value])
@@ -922,8 +930,6 @@ class Parser:
 
 			if self.token.type == Token.Type.NUMBER:
 				a = self.parse_number()
-				with contextlib.suppress(AssertionError):
-					self.consume_token()
 				break
 			if self.token.type == Token.Type.STRING:
 				a = self.parse_string()
@@ -1051,11 +1057,12 @@ class Parser:
 		array = AST.LiteralArray(pos=self.token.pos, values=[])
 		while self.token.value != '}':
 			array.values.append(self.parse_expression())
+			self.consume_token()
 			if self.token.value != ',':
 				self.assert_(self.token.value == '}', "Expected closing bracket")
 				break
 			self.consume_token()
-		self.consume_token()
+		# self.consume_token()
 		return array
 
 	@_wrap
@@ -1156,6 +1163,24 @@ class Parser:
 		self.stack.pop()
 
 		self.head.children.append(for_)
+
+	@_wrap
+	def parse_array_ref(self) -> AST.ArrayRef:
+		array_ref = AST.ArrayRef(pos=self.token.pos,
+			array=None, index=None)  # type:ignore
+		array_ref.array = self.parse_var_ref()
+		self.consume_token()
+		# [<index>]
+		assert self.token.value == '[', "Expected opening square bracket, "\
+						f"got {self.token.type}"
+		self.consume_token()
+		array_ref.index = self.parse_expression()
+		self.consume_token()
+		assert self.token.value == ']', "Expected closing square bracket, "\
+						f"got {self.token.type}"
+		# self.consume_token()
+
+		return array_ref
 
 
 def parse(tokens: list[Token]) -> Monad[AST.Root]:
@@ -1359,7 +1384,6 @@ class Scanner:
 		return r
 
 	def update_private(self, elm: AST.Element):
-		debug(f"update_private {elm.name}")
 		if not hasattr(elm, "private"):
 			return
 		if elm.private is None:  # type:ignore
@@ -1624,7 +1648,10 @@ class Scanner:
 	def scan_set(self, set: AST.VarSet):
 		self.scan_auto(set.l_value)
 		if set.offset is not None:
-			self.scan_auto(set.offset)
+			if isinstance(set.offset, AST.Literal) and set.offset.value in {"0","0.",".0","0.0"} and OPT <= 1:
+				set.offset = None
+			else:
+				self.scan_auto(set.offset)
 		self.scan_auto(set.value)
 
 	@auto(AST.Var)
@@ -1695,6 +1722,16 @@ class Scanner:
 	def scan_define_ref(self, ref: AST.DefineRef):
 		with self.Namespace(self, ref.pos, ""):
 			self.scan_auto(ref.expr)
+
+	@auto(AST.ArrayRef)
+	def scan_array_ref(self, ref: AST.ArrayRef):
+		self.scan_auto(ref.array)
+		self.scan_auto(ref.index)
+
+	@auto(AST.LiteralArray)
+	def scan_literal_array(self, arr: AST.LiteralArray):
+		for child in arr.values:
+			self.scan_auto(child)
 
 
 def _wrapA(func):
@@ -1807,6 +1844,8 @@ class Assembler:
 
 	auto: Auto[Assembler] = Auto()
 
+	arr_var: str | None
+
 	def __init__(self, tree: Scanner.ScannedRoot) -> None:
 		self.tree = tree
 		self.lines = []
@@ -1826,6 +1865,7 @@ class Assembler:
 		:return: A tuple of a string containing the assembly and a list of errors.
 		"""
 
+		self.arr_var = None
 		self.end = lambda: None
 		if DEBUG:
 			self.init_debug()
@@ -1883,6 +1923,9 @@ class Assembler:
 		for i,line in enumerate(self.lines):
 			if line.startswith(":"):
 				self.lines[i] = f"{self.labels.get(line,0)}"
+
+		if self.op_depth != 0:
+			debug(f"Op_depth is {self.op_depth}, while it should be 0")
 
 		return "\n".join(self.lines)
 
@@ -1962,6 +2005,8 @@ class Assembler:
 					for label, v in self.labels.items():
 						if v > i:
 							self.labels[label] = v + len(replacement) - len(pattern)
+		if self.lines[-1] == "done":
+			self.lines.pop()
 
 	def var(self,name:str) -> str:
 		if OPT != 0:
@@ -1969,6 +2014,12 @@ class Assembler:
 		if name not in self.var_lookup:
 			self.var_lookup[name] = next(self.sng)
 		return self.var_lookup[name]
+
+	def op_var(self) -> str:
+		if self.op_depth == len(self.op_vars):
+			self.op_vars.append(next(self.ovg))
+		self.op_depth += 1
+		return self.op_vars[self.op_depth - 1]
 
 	@_wrapA
 	def find_main(self, _) -> tuple[str, AST.FuncDef | None]:
@@ -2002,12 +2053,24 @@ class Assembler:
 	def assemble_var_def(self, var: AST.VarDef) -> None:
 		name = self.var(var.var.name)
 		if var.offset is not None:
+			offset = self.op_var()
+			self.assemble_auto(var.offset)
+			self.lines.append("storeAtVar")
+			self.lines.append(offset)
 			self.lines.append("createArray")
 			self.lines.append(name)
+			self.lines.append(offset)
+			self.op_depth -= 1
+
 		if var.value is not None:
-			self.assemble_auto(var.value)
-			self.lines.append("storeAtVar")
-			self.lines.append(name)
+			if isinstance(var.value, AST.LiteralArray):
+				self.arr_var = name
+				self.assemble_auto(var.value)
+				self.arr_var = None
+			else:
+				self.assemble_auto(var.value)
+				self.lines.append("storeAtVar")
+				self.lines.append(name)
 
 	@_wrapA
 	@auto(AST.RawASM)
@@ -2211,7 +2274,7 @@ class Assembler:
 
 	@auto(AST.VarSet)
 	def assemble_var_set(self, var_set: AST.VarSet) -> None:
-		if isinstance(var_set.l_value, AST.Var):
+		if isinstance(var_set.l_value, AST.Var) and var_set.offset is None:
 			if var_set.modifier == "++":
 				self.lines.append("inc")
 				self.lines.append(self.var(var_set.l_value.name))
@@ -2222,6 +2285,18 @@ class Assembler:
 				return
 		elif var_set.modifier in {"--","++"}:
 			var_set.modifier = var_set.modifier[0]
+
+		if var_set.offset is not None:
+			# create offset var
+			if len(self.op_vars) == self.op_depth:
+				self.op_vars.append(next(self.ovg))
+			offset_var = self.op_vars[self.op_depth]
+			self.op_depth += 1
+			self.assemble_auto(var_set.offset)
+			self.lines.append("storeAtVar")
+			self.lines.append(offset_var)
+		else:
+			offset_var = "N/A"
 
 		self.assemble_auto(var_set.value)
 		if var_set.modifier is not None:
@@ -2236,10 +2311,69 @@ class Assembler:
 			self.lines.append(op_var)
 
 		if isinstance(var_set.l_value, AST.Var):
-			self.lines.append("storeAtVar")
-			self.lines.append(self.var(var_set.l_value.name))
+			if var_set.offset is None:
+				self.lines.append("storeAtVar")
+				self.lines.append(self.var(var_set.l_value.name))
+			else:
+				self.lines.append("storeAtVarWithOffset")
+				self.lines.append(self.var(var_set.l_value.name))
+				self.lines.append(offset_var)
+				self.op_depth -= 1
+
 		else:
 			info("TODO: implement l_value")
+
+	@auto(AST.ArrayRef)
+	def assemble_array_ref(self, array_ref: AST.ArrayRef) -> None:
+		if isinstance(array_ref.index,AST.Literal) and array_ref.index.value in {"0.0","0",".0","0."} and OPT <= 1:
+			self.lines.append("loadAtVar")
+			self.lines.append(self.var(array_ref.array.name))
+			return
+		index_var = self.op_var()
+		self.assemble_auto(array_ref.index)
+		self.lines.append("storeAtVar")
+		self.lines.append(index_var)
+		self.lines.append("loadAtVarWithOffset")
+		self.lines.append(self.var(array_ref.array.name))
+		self.lines.append(index_var)
+		self.op_depth -= 1
+
+	@auto(AST.LiteralArray)
+	def assemble_literal_array(self, literal_array: AST.LiteralArray) -> str:
+		if self.arr_var is None:
+			arr_var = self.op_var()
+		else:
+			arr_var = self.arr_var
+			self.arr_var = None
+			size_var = self.op_var()
+
+			# define and allocate the array
+			self.lines.append("ldi")
+			self.lines.append(str(len(literal_array.values)))
+			self.lines.append("storeAtVar")
+			self.lines.append(size_var)
+
+			self.lines.append("createArray")
+			self.lines.append(arr_var)
+			self.lines.append(size_var)
+
+			self.op_depth -= 1
+
+		# store the values
+		# TODO - Multi dimensional arrays
+		index = self.op_var()
+		for i, value in enumerate(literal_array.values):
+			self.lines.append("ldi")
+			self.lines.append(str(i))
+			self.lines.append("storeAtVar")
+			self.lines.append(index)
+			self.assemble_auto(value)
+			self.lines.append("storeAtVarWithOffset")
+			self.lines.append(arr_var)
+			self.lines.append(index)
+		self.op_depth -= 1
+
+		return arr_var
 
 
 def compile(code: str, source: str, force: bool = False):

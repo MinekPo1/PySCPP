@@ -222,8 +222,8 @@ class SLVM:
 		if len(self._memory) + size >= self.MAX_MEMORY_SIZE:
 			self._running = False
 			raise ValueError("Memory overflow")
-		self._memory._raw.extend([0] * size)
-		self._array_sizes.extend([1] * size)
+		self._memory._raw.extend([0] * (size + 1))
+		self._array_sizes.extend([1] * (size + 1))
 		addr = self._first_unused
 		self._first_unused += size
 		return addr
@@ -232,79 +232,6 @@ class SLVM:
 		if name in self._var_lookup:
 			return
 		self._var_lookup[name] = self._allocate(1)
-
-	"""
-		List of instructions:
-		ldi
-		loadAtVar
-		storeAtVar
-		jts
-		ret
-		addWithVar
-		subWithVar
-		mulWithVar
-		divWithVar
-		bitwiseLsfWithVar
-		bitwiseRsfWithVar
-		bitwiseAndWithVar
-		bitwiseOrWithVar
-		modWithVar
-		print
-		println
-		jmp
-		jt
-		jf
-		boolAndWithVar
-		boolOrWithVar
-		boolEqualsWithVar
-		largerOrEqualsWithVar
-		smallerOrEqualsWithVar
-		boolNotEqualsWithVar
-		smallerThanWithVar
-		largerThanWithVar
-		putPixel
-		putLine
-		putRect
-		setColor
-		clg
-		done
-		malloc
-		round
-		floor
-		ceil
-		cos
-		sin
-		sqrt
-		atan2
-		mouseDown
-		mouseX
-		mouseY
-		sleep
-		drawText
-		loadAtVarWithOffset
-		storeAtVarWithOffset
-		isKeyPressed
-		createArray
-		createColor
-		charAt
-		contains
-		join
-		setStrokeWidth
-		inc
-		dec
-		arraySize
-		graphicsFlip
-		newLine
-		ask
-		setCloudVar
-		getCloudVar
-		indexOfChar
-		goto
-		imalloc
-		getValueAtPointer
-		setValueAtPointer
-		typeOf
-	"""
 
 	@_wrap("ldi")
 	def _ldi(self):
@@ -324,7 +251,7 @@ class SLVM:
 
 	@_wrap("jts")
 	def _jts(self):
-		self._stack.append(self._code_ptr)
+		self._stack.append(self._code_ptr + 1)
 		try:
 			self._code_ptr = int(self._get_next_safe())
 		except ValueError as e:

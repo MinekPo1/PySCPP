@@ -2,13 +2,13 @@ from PySCPP import AST
 from copy import deepcopy
 
 print_ = AST.FuncDef(
-	(2, 0, __file__),
+	(4, 0, __file__),
 	[
 		AST.RawASM(
-			(3, 0, __file__),
+			(7, 0, __file__),
 			[
 				AST.Literal(
-					(3, 0, __file__),
+					(10, 0, __file__),
 					"print",
 				)
 			]
@@ -17,7 +17,7 @@ print_ = AST.FuncDef(
 	"print",
 	[
 		AST.Var(
-			(3, 0, __file__),
+			(19, 0, __file__),
 			"!",
 		)
 	],
@@ -25,13 +25,13 @@ print_ = AST.FuncDef(
 )
 
 println = AST.FuncDef(
-	(26, 0, __file__),
+	(27, 0, __file__),
 	[
 		AST.RawASM(
-			(3, 0, __file__),
+			(30, 0, __file__),
 			[
 				AST.Literal(
-					(3, 0, __file__),
+					(33, 0, __file__),
 					"println",
 				)
 			]
@@ -40,17 +40,44 @@ println = AST.FuncDef(
 	"println",
 	[
 		AST.Var(
-			(3, 0, __file__),
+			(42, 0, __file__),
 			"!",
 		)
 	],
 	True
 )
 
+malloc = AST.FuncDef(
+	(50, 0, __file__),
+	[
+		AST.RawASM(
+			(53, 0, __file__),
+			[
+				AST.Literal(
+					(56, 0, __file__),
+					"malloc"
+				),
+				AST.Var(
+					(62, 0, __file__),
+					"size"
+				)
+			]
+		)
+	],
+	"malloc",
+	[
+		AST.Var(
+			(56, 0, __file__),
+			"size"
+		)
+	],
+	True
+)
 
 all_builtins = {
 	"print": print_,
 	"println": println,
+	"malloc": malloc
 }
 
 

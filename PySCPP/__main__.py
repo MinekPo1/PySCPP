@@ -5,6 +5,7 @@ from PySCPP.utils import display_errors, Monad
 from typing import TypedDict
 from pathlib import Path
 from glob import glob
+from time import time
 
 
 class DirtyOptions(TypedDict):
@@ -226,11 +227,13 @@ def main() -> None:
 	compiler.DEBUG = options["debug"]
 	utils.VERBOSITY = options["verbose"]
 	for fn in glob(options["input"]):
+		if not options["silent"]:
+			print(f"{fn}:")
+		t1 = time()
 		file = Path(fn)
 		code = file.read_text()
 		if options["tokens"] or options["tree"] or options["scan"]\
 			or options["objs"]:
-			print(f"{fn}:")
 			show_tree_or_tokens(code, options, fn)
 			continue
 		monad = compiler.compile(code, fn)
@@ -238,6 +241,10 @@ def main() -> None:
 			if not options["silent"]:
 				display_errors(monad.errors)
 			quit(1)
+
+		if not options["silent"]:
+			print(f"Compiled in {(time() - t1) * 1000:.3f} ms")
+
 		if options["run"]:
 			class IO:
 				def write(self, s: str) -> None:

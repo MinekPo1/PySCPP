@@ -145,3 +145,9 @@ class Include(Element):
 @dataclass
 class DefineRef(Expression):
 	expr: Expression
+
+
+@dataclass
+class ArrayRef(Expression):
+	array: Var
+	index: Expression
