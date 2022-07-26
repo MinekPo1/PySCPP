@@ -231,9 +231,9 @@ def main() -> None:
 		if options["tokens"] or options["tree"] or options["scan"]\
 			or options["objs"]:
 			print(f"{fn}:")
-			show_tree_or_tokens(code, options)
+			show_tree_or_tokens(code, options, fn)
 			continue
-		monad = compiler.compile(code, options["input"])
+		monad = compiler.compile(code, fn)
 		if monad.errors:
 			if not options["silent"]:
 				display_errors(monad.errors)
@@ -264,8 +264,8 @@ def main() -> None:
 			f.write(monad.value)
 
 
-def show_tree_or_tokens(code, options):
-	tokens = compiler.tokenize(code, options["input"])
+def show_tree_or_tokens(code, options, fn):
+	tokens = compiler.tokenize(code, fn)
 	if options["tokens"]:
 		for token in tokens:
 			print(token.type,token.value,sep="\t")

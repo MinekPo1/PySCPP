@@ -93,7 +93,7 @@ def display_errors(errors: list[Error]) -> None:
 
 			p_stack = error.stack
 
-		print(error.message)
+		print(error.message, f"({error.pos[2]}:{error.pos[0]+1}:{error.pos[1]})")
 		try:
 			print(f"{error.pos[0]+1: >2}| ",lines[error.pos[0]])
 			tabs = lines[error.pos[0]][:error.pos[1]].count("\t")

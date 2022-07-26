@@ -120,7 +120,7 @@ SingleCharacterTokens = {
 	"*": Token.Type.OPERATOR,
 	"/": Token.Type.OPERATOR,
 	"%": Token.Type.OPERATOR,
-	"^": Token.Type.OPERATOR,
+	# "^": Token.Type.OPERATOR,
 	"=": Token.Type.EQUALS_SIGN,
 	"<": Token.Type.OPERATOR,
 	">": Token.Type.OPERATOR,
@@ -329,10 +329,13 @@ def _wrap(func: Callable[[Parser], T]) -> Callable[[Parser], T]:
 oper_weight = {
 	'+': 1,
 	'-': 1,
+	'..': 2,
 	'*': 2,
 	'/': 2,
 	'%': 2,
-	'^': 3,
+	'&': 3,
+	'|': 3,
+	# '^': 3,
 	'<': 4,
 	'>': 4,
 	'<=': 4,
@@ -341,6 +344,8 @@ oper_weight = {
 	'!=': 4,
 	'&&': 5,
 	'||': 5,
+	'<<': 4,
+	'>>': 4,
 }
 
 
@@ -560,7 +565,7 @@ class Parser:
 		consumer = self.consumer()
 		while next(consumer):
 			if self.token.type == Token.Type.BRACKET_CLOSE:
-				self.consume_token()
+				# self.consume_token()
 				break
 			if self.token.type == Token.Type.KEYWORD:
 				if self.token.value == "namespace":
@@ -863,7 +868,7 @@ class Parser:
 			func.args.append(self.parse_expression())
 			self.consume_token()
 			while self.token.value == ',':
-				# self.consume_token()
+				self.consume_token()
 				func.args.append(self.parse_expression())
 				self.consume_token()
 
@@ -922,8 +927,8 @@ class Parser:
 				break
 			if self.token.type == Token.Type.STRING:
 				a = self.parse_string()
-				with contextlib.suppress(AssertionError):
-					self.consume_token()
+				# with contextlib.suppress(AssertionError):
+				# 	self.consume_token()
 				break
 			if self.token.type == Token.Type.KEYWORD \
 				and self.token.value == '_getValueOfA_':
@@ -960,6 +965,7 @@ class Parser:
 			op = self.token.value
 			self.consume_token()
 			b = self.parse_expression()
+			self.consume_token()
 			self.tokens_i -= 1
 			a = AST.Operation(pos=a.pos, op=op, left=a, right=b)
 			# check if the weight of the operation is higher than the current one
@@ -994,14 +1000,22 @@ class Parser:
 				self.consume_token()
 				break
 			asm.arguments.append(self.parse_expression())
+			self.consume_token()
 			if self.token.value != ',':
 				if paren and self.token.value == ')':
 					self.consume_token()
 					break
-				self.assert_(not paren, "Expected closing parenthesis or comma")
+				self.assert_(
+					not paren,
+					"Expected closing parenthesis or comma"
+					if paren else "Expected comma or a semicolon"
+				)
 				break
 		else:
-			self.assert_(not paren, "Expected closing parenthesis")
+			if paren:
+				self.assert_(False, "Expected closing parenthesis")
+			else:
+				self.assert_(not paren, "Expected semicolon")
 
 		self.head.children.append(asm)
 
@@ -1011,10 +1025,7 @@ class Parser:
 		while self.token.type == Token.Type.OPERATOR:
 			memory_descriptor = self.token.value
 			self.consume_token()
-		var = AST.Var(pos=self.token.pos, name=self.token.value,
-			memory_specifier=memory_descriptor)
-		self.consume_token()
-		return var
+		return AST.Var(self.token.pos,self.token.value,memory_descriptor)
 
 	@_wrap
 	def parse_number(self):
@@ -1056,6 +1067,7 @@ class Parser:
 			return
 		self.head.children.append(AST.Return(pos=self.token.pos,
 			value=self.parse_expression()))
+		self.consume_token()
 
 	@_wrap
 	def parse_if(self):
@@ -1064,6 +1076,7 @@ class Parser:
 		assert self.token.value == '(', "Expected opening parenthesis"
 		self.consume_token()
 		if_.condition = self.parse_expression()
+		self.consume_token()
 		assert self.token.value == ')', "Expected closing parenthesis"
 		self.consume_token()
 		self.stack.append(if_)
@@ -1224,6 +1237,7 @@ class Scanner:
 	namespace_stack: list[tuple[str,Pos]]
 	accessed: dict[str, int]
 	bucket: list[AST.Element]
+	def_private: bool
 
 	ScannedRoot = NewType('ScannedRoot', AST.Root)
 
@@ -1276,6 +1290,7 @@ class Scanner:
 			After scanning the tree it returns it along with errors
 		"""
 		# add builtins
+		self.def_private = True
 		for i in builtins.get_builtins().values():
 			self.tree.children.insert(0, i)
 		self.scan_root(self.tree)
@@ -1343,6 +1358,13 @@ class Scanner:
 		)
 		return r
 
+	def update_private(self, elm: AST.Element):
+		debug(f"update_private {elm.name}")
+		if not hasattr(elm, "private"):
+			return
+		if elm.private is None:  # type:ignore
+			elm.private = self.def_private  # type:ignore
+
 	@auto(AST.Root)
 	@_wrapS
 	def scan_root(self, root: AST.Root):
@@ -1399,7 +1421,7 @@ class Scanner:
 	def scan_container(self, elm: AST.Container):
 		p_bucket = self.bucket
 		self.bucket = []
-		namespaces: AST.Namespace = []
+		namespaces: list[AST.Namespace] = []
 		for child in elm.children:
 			self.scan_auto(child)
 			if isinstance(child, AST.Namespace):
@@ -1412,6 +1434,8 @@ class Scanner:
 	@auto(AST.FuncDef)
 	@_wrapS
 	def scan_function(self, func: AST.FuncDef):
+
+		self.update_private(func)
 
 		if func.name == "main":
 			if not self.has_main and len(func.args) == 0 and not func.private:
@@ -1462,7 +1486,8 @@ class Scanner:
 			self.objects[self.jns(var.name)] = vardef
 
 		if self.remote:
-			self.to_be_checked[func.name] = func
+			self.to_be_checked[self.jns(func.name)] = func
+			debug(f"{self.jns(func.name)} is to be checked")
 		else:
 			with self.Namespace(self, func, func.name):
 				self.scan_container(func)
@@ -1479,8 +1504,12 @@ class Scanner:
 		if namespace.name in self.objects:
 			raise AssertionError(f"Duplicate namespace {namespace.name}")
 		self.objects[self.jns(namespace.name)] = namespace
+		self.update_private(namespace)
 		if namespace.private:
-			self.is_private[self.jns(namespace.name)]
+			self.is_private[self.jns(namespace.name)] = True
+		p_def_priv = self.def_private
+		if namespace.default_private is not None:
+			self.def_private = namespace.default_private
 		with self.Namespace(self, namespace, namespace.name):  # type: ignore
 			self.scan_container(namespace)  # type: ignore
 
@@ -1518,6 +1547,8 @@ class Scanner:
 					if isinstance(g_child, AST.VarDef):
 						g_child.var.name = f"{namespace.name}::{g_child.var.name}"
 
+		self.def_private = p_def_priv
+
 	def rescan_func(self, namespace, ns, copy_queue, item):
 		item.name = item.name.replace(ns.name, namespace.name, 1)
 		debug(f"func {item.name}", ns.name, namespace.name)
@@ -1532,6 +1563,7 @@ class Scanner:
 		if self.jns(var.var.name) in self.objects:
 			raise AssertionError(f"Duplicate variable {var.var.name}")
 		self.objects[self.jns(var.var.name)] = var
+		self.update_private(var)
 		if var.private:
 			self.is_private[self.jns(var.var.name)] = True
 		if var.offset is not None:
@@ -1568,6 +1600,8 @@ class Scanner:
 				f"\"{call.name}\" cannot be bound to {len(call.args)} arguments."
 			)
 
+		debug(f"call {call.name}")
+
 		if func in self.accessed:
 			self.accessed[func] += 1
 		else:
@@ -1576,9 +1610,10 @@ class Scanner:
 			debug(f"{call.name} is called for the #1 time")
 			# set namespace to the function's namespace
 			pos = self.objects[func].pos  # type:ignore
-			with self.Namespace(self, pos, func, True):
-				self.scan_container(self.to_be_checked[func])
+			the_func = self.to_be_checked[func]
 			del self.to_be_checked[func]
+			with self.Namespace(self, pos, func, True):
+				self.scan_container(the_func)
 		call.name = func
 
 		for child in call.args:
@@ -1643,6 +1678,7 @@ class Scanner:
 	@_wrapS
 	def scan_return(self, ret: AST.Return):
 		if ret.value is not None:
+			debug("return value")
 			self.scan_auto(ret.value)
 
 	@auto(AST.Operation)
@@ -2099,6 +2135,7 @@ class Assembler:
 		self.labels[label_end] = len(self.lines)
 
 	@auto(AST.Operation)
+	@_wrapA
 	def assemble_operation(self, op: AST.Operation) -> None:
 		self.assemble_auto(op.left)
 		if self.op_depth == len(self.op_vars):
@@ -2108,6 +2145,7 @@ class Assembler:
 		self.op_depth += 1
 		self.assemble_auto(op.right)
 		self.op_depth -= 1
+		assert op.op in oper_map, "Unknown operation"
 		self.lines.append(oper_map[op.op])
 		self.lines.append(self.op_vars[self.op_depth])
 
