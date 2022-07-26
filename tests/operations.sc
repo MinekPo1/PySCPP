@@ -9,7 +9,6 @@ namespace operations {
 		println(1 >> 1);
 		println(1 & 1);
 		println(1 | 1);
-		println(1 ^ 1);
 		println(1 == 1);
 		println(1 != 1);
 		println(1 < 1);
@@ -19,5 +18,23 @@ namespace operations {
 		println(1 && 1);
 		println(1 || 1);
 		println(1 .. 1);
+		println(1 + 1 + 1);
+		println(1 - 1 - 1);
+		println(1 * 1 * 1);
+		println(1 / 1 / 1);
+		println(1 % 1 % 1);
+		println(1 << 1 << 1);
+		println(1 >> 1 >> 1);
+		println(1 & 1 & 1);
+		println(1 | 1 | 1);
+		println(1 == 1 == 1);
+		println(1 != 1 != 1);
+		println(1 < 1 < 1);
+		println(1 > 1 > 1);
+		println(1 <= 1 <= 1);
+		println(1 >= 1 >= 1);
+		println(1 && 1 && 1);
+		println(1 || 1 || 1);
+		println(1 .. 1 .. 1);
 	}
 }
