@@ -148,6 +148,12 @@ class DefineRef(Expression):
 
 
 @dataclass
-class ArrayRef(Expression):
+class StrongArrayRef(Expression):
 	array: Var
+	index: Expression
+
+
+@dataclass
+class WeakArrayRef(Expression):
+	array: Expression
 	index: Expression

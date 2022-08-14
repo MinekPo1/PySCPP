@@ -172,6 +172,11 @@ Keywords = {
 	"_asm_": Token.Type.KEYWORD,
 	"_valueOfA_": Token.Type.KEYWORD,
 	"is": Token.Type.KEYWORD,
+	"else": Token.Type.KEYWORD,
+	"using": Token.Type.KEYWORD,
+	"switch": Token.Type.KEYWORD,
+	"case": Token.Type.KEYWORD,
+	"default": Token.Type.KEYWORD,
 }
 
 
@@ -902,7 +907,7 @@ class Parser:
 
 				if self.token_view[1].type == Token.Type.SQ_BRACKET_OPEN \
 					and self.token.type == Token.Type.IDENTIFIER:
-					a = self.parse_array_ref()
+					a = self.parse_strong_array_ref()
 					break
 
 				if self.token_view[1].type == Token.Type.PAREN_OPEN \
@@ -959,6 +964,10 @@ class Parser:
 					self.consume_token()
 				break
 		assert a is not None, f"Expected expression, got {self.token.type}"
+
+		# check if we can scan ahead
+		if len(self.tokens) > self.tokens_i and self.token_view[1].type == Token.Type.SQ_BRACKET_OPEN:
+			a = self.parse_weak_array_ref(a)
 
 		with contextlib.suppress(AssertionError):
 			a = self.parse_oper(a)
@@ -1165,8 +1174,8 @@ class Parser:
 		self.head.children.append(for_)
 
 	@_wrap
-	def parse_array_ref(self) -> AST.ArrayRef:
-		array_ref = AST.ArrayRef(pos=self.token.pos,
+	def parse_strong_array_ref(self) -> AST.StrongArrayRef:
+		array_ref = AST.StrongArrayRef(pos=self.token.pos,
 			array=None, index=None)  # type:ignore
 		array_ref.array = self.parse_var_ref()
 		self.consume_token()
@@ -1180,6 +1189,21 @@ class Parser:
 						f"got {self.token.type}"
 		# self.consume_token()
 
+		return array_ref
+
+	def parse_weak_array_ref(self,array: AST.Expression) -> AST.WeakArrayRef:
+		array_ref = AST.WeakArrayRef(pos=self.token.pos,
+			array=array, index=None)
+		# we assume that the `[` token is there
+		# we consume two tokens because one is the array expression.
+		self.consume_token()
+		self.consume_token()
+		array_ref.index = self.parse_expression()
+		self.consume_token()
+		assert self.token.value == ']', "Expected closing square bracket, "\
+						f"got {self.token.type}"
+
+		debug("done!")
 		return array_ref
 
 
@@ -1723,8 +1747,13 @@ class Scanner:
 		with self.Namespace(self, ref.pos, ""):
 			self.scan_auto(ref.expr)
 
-	@auto(AST.ArrayRef)
-	def scan_array_ref(self, ref: AST.ArrayRef):
+	@auto(AST.StrongArrayRef)
+	def scan_strong_array_ref(self, ref: AST.StrongArrayRef):
+		self.scan_auto(ref.array)
+		self.scan_auto(ref.index)
+
+	@auto(AST.WeakArrayRef)
+	def scan_weak_array_ref(self, ref: AST.WeakArrayRef):
 		self.scan_auto(ref.array)
 		self.scan_auto(ref.index)
 
@@ -1937,46 +1966,46 @@ class Assembler:
 		self.lines.append("ldi")
 		self.lines.append("0")
 
-	def symbol(self,name: str) -> Callable[[],None]:
-		if DEBUG:
-			if self.op_depth == len(self.op_vars):
-				self.op_vars.append(next(self.ovg))
-			p_var = self.op_vars[self.op_depth]
-			self.op_depth += 1
+	def symbol(self, name: str) -> Callable[[], None]:
+		if not DEBUG:
+			return lambda: None
+
+		if self.op_depth == len(self.op_vars):
+			self.op_vars.append(next(self.ovg))
+		p_var = self.op_vars[self.op_depth]
+		self.op_depth += 1
+		if self.op_depth == len(self.op_vars):
+			self.op_vars.append(next(self.ovg))
+		var = self.op_vars[self.op_depth]
+		self.lines.append("storeAtVar")
+		self.lines.append(var)
+		self.lines.append("loadAtVar")
+		self.lines.append("$SYMBOL")
+		self.lines.append("storeAtVar")
+		self.lines.append(p_var)
+		self.lines.append("ldi")
+		self.lines.append(name)
+		self.lines.append("storeAtVar")
+		self.lines.append("$SYMBOL")
+		self.lines.append("loadAtVar")
+		self.lines.append(var)
+		def end():
 			if self.op_depth == len(self.op_vars):
 				self.op_vars.append(next(self.ovg))
 			var = self.op_vars[self.op_depth]
 			self.lines.append("storeAtVar")
 			self.lines.append(var)
 			self.lines.append("loadAtVar")
-			self.lines.append("$SYMBOL")
-			self.lines.append("storeAtVar")
 			self.lines.append(p_var)
-			self.lines.append("ldi")
-			self.lines.append(name)
 			self.lines.append("storeAtVar")
 			self.lines.append("$SYMBOL")
 			self.lines.append("loadAtVar")
 			self.lines.append(var)
+			self.end = p_end
 
-			def end():
-				if self.op_depth == len(self.op_vars):
-					self.op_vars.append(next(self.ovg))
-				var = self.op_vars[self.op_depth]
-				self.lines.append("storeAtVar")
-				self.lines.append(var)
-				self.lines.append("loadAtVar")
-				self.lines.append(p_var)
-				self.lines.append("storeAtVar")
-				self.lines.append("$SYMBOL")
-				self.lines.append("loadAtVar")
-				self.lines.append(var)
-				self.end = p_end
-
-			p_end = self.end
-			self.end = end
-			return end
-		return lambda: None
+		p_end = self.end
+		self.end = end
+		return end
 
 	@classmethod
 	def do(cls, tree: Scanner.ScannedRoot) -> Monad[str]:
@@ -2323,8 +2352,8 @@ class Assembler:
 		else:
 			info("TODO: implement l_value")
 
-	@auto(AST.ArrayRef)
-	def assemble_array_ref(self, array_ref: AST.ArrayRef) -> None:
+	@auto(AST.StrongArrayRef)
+	def assemble_strong_array_ref(self, array_ref: AST.StrongArrayRef) -> None:
 		if isinstance(array_ref.index,AST.Literal) and array_ref.index.value in {"0.0","0",".0","0."} and OPT <= 1:
 			self.lines.append("loadAtVar")
 			self.lines.append(self.var(array_ref.array.name))
@@ -2337,6 +2366,34 @@ class Assembler:
 		self.lines.append(self.var(array_ref.array.name))
 		self.lines.append(index_var)
 		self.op_depth -= 1
+
+	@auto(AST.WeakArrayRef)
+	def assemble_weak_array_ref(self, array_ref: AST.WeakArrayRef) -> None:
+		# a weak array ref is just pointer stuff :D
+		# get the pointer
+		self.assemble_auto(array_ref.array)
+
+		# some opt for index values
+		if isinstance(array_ref.index,AST.Literal) and OPT <= 1:
+			index = int(float(array_ref.index.value))
+			# we'll be nice and round the literal :)
+			if index <= 6:  # it takes 6 lines do load and add a number
+				for _ in range(index):
+					self.lines.append("incA")
+				self.lines.append("getValueAtPointerOfA")
+				return
+
+
+		arr = self.op_var()
+		self.lines.append("storeAtVar")
+		self.lines.append(arr)
+		# get the index
+		self.assemble_auto(array_ref.index)
+		self.lines.append("addWithVar")
+		self.lines.append(arr)
+		self.op_depth -= 1
+		self.lines.append("getValueAtPointerOfA")
+		return
 
 	@auto(AST.LiteralArray)
 	def assemble_literal_array(self, literal_array: AST.LiteralArray) -> str:

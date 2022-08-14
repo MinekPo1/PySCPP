@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 from typing import IO, Callable, Generic, Literal, TypeVar, overload
 from io import StringIO
 import math
@@ -115,6 +116,7 @@ class SLVM:
 	_graphic_buffer: list[str]
 	_sleep_to: float = 0
 	_array_sizes: list[int]
+	_start_time: float | None = None
 
 	console: IO[str]
 	"The io object the VM writes/reads to/from. Default is a StringIO object."
@@ -186,6 +188,8 @@ class SLVM:
 		return i
 
 	def __next__(self):
+		if self._start_time is None:
+			self._start_time = time.time()
 		if not self._running:
 			raise StopIteration()
 		if self._sleep_to > time.time():
@@ -202,8 +206,9 @@ class SLVM:
 		"""
 			Exhausts the object by repeatedly calling ``next`` on it.
 		"""
-		while self._running:
-			next(self)
+		with contextlib.suppress(StopIteration):
+			while self._running:
+				next(self)
 
 	def _allocate(self, size: int) -> int:
 		if self._free_chunks:
@@ -227,6 +232,16 @@ class SLVM:
 		addr = self._first_unused
 		self._first_unused += size
 		return addr
+
+	def _dealocate(self, size: int, ptr: int):
+		if self._free_chunks:
+			for i,chunk in enumerate(self._free_chunks):
+				if chunk[0] + chunk[1] == ptr:
+					self._free_chunks[i] = (
+						chunk[0], chunk[1] + size
+					)
+					return None
+		self._free_chunks.append((ptr, size))
 
 	def _prep_var(self, name: str):
 		if name in self._var_lookup:
@@ -796,3 +811,62 @@ class SLVM:
 			self._memory[self._var_lookup[var]] = "int"
 			return
 		self._memory[self._var_lookup[var]] = "float"
+
+	@_wrap("runtimeMillis")
+	def _runtimeMillis(self):
+		self._a_reg = float(time.time() * 1000)
+
+	@_wrap("free")
+	def _free(self):
+		addr = self._get_next_safe()
+		self._prep_var(addr)
+		size = self._get_next_safe()
+		self._prep_var(size)
+
+		self._dealocate(
+			int(self._memory.floats[self._var_lookup[size]]),
+			int(self._memory.floats[self._var_lookup[addr]])
+		)
+
+	@_wrap("getVarAddress")
+	def _getVarAddress(self):
+		var = self._get_next_safe()
+		self._prep_var(var)
+		self._a_reg = self._var_lookup[var]
+
+	@_wrap("setVarAddress")
+	def _setVarAddress(self):
+		var = self._get_next_safe()
+		self._prep_var(var)
+		self._var_lookup[var] = int(self._float_a)
+
+	@_wrap("copyVar")
+	def _copyVar(self):
+		old = self._get_next_safe()
+		self._prep_var(old)
+		var = self._get_next_safe()
+		self._prep_var(var)
+		self._var_lookup[var] = self._var_lookup[old]
+
+	@_wrap("incA")
+	def _incA(self):
+		self._float_a += 1
+
+	@_wrap("decA")
+	def _decA(self):
+		self._float_a -= 1
+
+	@_wrap("arrayBoundsCheck")
+	def _arrayBoundsCheck(self):
+		array = self._get_next_safe()
+		index = self._get_next_safe()
+		self._prep_var(array)
+		self._prep_var(index)
+		if int(self._memory.floats[self._var_lookup[index]]) >= int(self._memory.floats[self._var_lookup[array]]):
+			self._a_reg = 1
+		else:
+			self._a_reg = 0
+
+	@_wrap("getValueAtPointerOfA")
+	def _getValueAtPointerOfA(self):
+		self._a_reg = self._memory[int(self._float_a)]
