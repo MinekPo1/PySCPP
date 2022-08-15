@@ -719,7 +719,6 @@ class Parser:
 
 			if self.token.value == "_asm_":
 				self.parse_raw_asm()
-				assert self.token.value == ';', "Expected semi-colon"
 				return
 			if self.token.value == "var":
 				self.parse_var_def()
@@ -927,9 +926,9 @@ class Parser:
 					a = AST.DefineRef(self.token.pos,self.definitions[self.token.value])
 					if a is None:
 						a = AST.Var(pos=self.token.pos, name=self.token.value)
-					with contextlib.suppress(AssertionError):
-						self.consume_token()
-						break
+					# with contextlib.suppress(AssertionError):
+					# 	self.consume_token()
+					# 	break
 				else:
 					a = self.parse_var_ref()
 					break
@@ -952,8 +951,7 @@ class Parser:
 				break
 
 			if self.token.type == Token.Type.KEYWORD and self.token.value == '_asm_':
-				self.parse_raw_asm()
-				a = self.head.children.pop()  # type:ignore
+				a = self.parse_raw_asm_expr()
 				break
 
 			# if self.token.type == TokenType.PAREN_CLOSE:
@@ -965,13 +963,15 @@ class Parser:
 				if a is None:
 					# enter a replacement for the empty expression
 					a = AST.Expression(pos=self.token.pos)
-				if self.assert_(self.token.value == ')', "Expected closing parenthesis"):
-					self.consume_token()
+				self.consume_token()
+				assert self.token.value == ')', "Expected closing parenthesis"
+
 				break
 		assert a is not None, f"Expected expression, got {self.token.type}"
 
 		# check if we can scan ahead
-		if len(self.tokens) > self.tokens_i and self.token_view[1].type == Token.Type.SQ_BRACKET_OPEN:
+		if len(self.tokens) > self.tokens_i \
+			and self.token_view[1].type == Token.Type.SQ_BRACKET_OPEN:
 			a = self.parse_weak_array_ref(a)
 
 		with contextlib.suppress(AssertionError):
@@ -1019,11 +1019,17 @@ class Parser:
 			if paren and self.token.value == ')':
 				self.consume_token()
 				break
+			if not paren and self.token.value == ';':
+				break
+			debug(self.token.value)
 			asm.arguments.append(self.parse_expression())
+			debug(f"Parsed raw asm argument: {asm.arguments[-1]}")
 			self.consume_token()
 			if self.token.value != ',':
 				if paren and self.token.value == ')':
 					self.consume_token()
+					break
+				if not paren and self.token.value == ';':
 					break
 				self.assert_(
 					not paren,
@@ -1031,13 +1037,51 @@ class Parser:
 					if paren else "Expected comma or a semicolon"
 				)
 				break
+			debug(self.token.value)
 		else:
 			if paren:
 				self.assert_(False, "Expected closing parenthesis")
 			else:
 				self.assert_(not paren, "Expected semicolon")
+		debug("end")
+
+		assert self.token.value == ';', "Expected semicolon"
+		# self.consume_token()
+		# idk why
+		# this project is a mess lol
 
 		self.head.children.append(asm)
+
+	@_wrap
+	def parse_raw_asm_expr(self):
+		self.consume_token()
+		assert self.token.type == Token.Type.PAREN_OPEN, \
+			"Expected opening parenthesis for raw asm in expression"
+		self.consume_token()
+
+		# we expect expressions separated by commas
+		asm = AST.RawASM(self.token.pos,[])
+
+		consumer = self.consumer()
+		while next(consumer):
+			if self.token.value == ')':
+				break
+			asm.arguments.append(self.parse_expression())
+			self.consume_token()
+			if self.token.value != ',':
+				if self.token.value == ')':
+					break
+				self.assert_(
+					True,
+					"Expected closing parenthesis or comma"
+				)
+				break
+		else:
+			self.assert_(False, "Expected closing parenthesis")
+
+		debug(":",self.token.value)
+
+		return asm
 
 	@_wrap
 	def parse_var_ref(self):
@@ -1123,6 +1167,7 @@ class Parser:
 		assert self.token.value == '(', "Expected opening parenthesis"
 		self.consume_token()
 		while_.condition = self.parse_expression()
+		self.consume_token()
 		assert self.token.value == ')', "Expected closing parenthesis"
 		self.consume_token()
 		self.stack.append(while_)
@@ -1158,7 +1203,7 @@ class Parser:
 		if self.token.value == 'by':
 			self.consume_token()
 			for_.step = self.parse_expression()
-			self.parse_statement()
+			self.consume_token()
 		assert self.token.value == ')', "Expected closing parenthesis"
 		self.consume_token()
 		self.stack.append(for_)
@@ -1502,7 +1547,7 @@ class Scanner:
 			assert isinstance(func_obj, ScannedFunction),\
 				f"Namespace collision: {func.name} for {len(func.args)} args"
 			if not func.private \
-				and self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")]:
+				and self.is_private.get(f"{self.namespace}::{func.name}".removeprefix("::"), False):
 				self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")] \
 					= False
 
@@ -2040,7 +2085,7 @@ class Assembler:
 					for label, v in self.labels.items():
 						if v > i:
 							self.labels[label] = v + len(replacement) - len(pattern)
-		if self.lines[-1] == "done":
+		if self.lines and self.lines[-1] == "done":
 			self.lines.pop()
 
 	def var(self,name:str) -> str:

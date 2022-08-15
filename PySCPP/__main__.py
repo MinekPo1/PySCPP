@@ -1,7 +1,7 @@
 from sys import argv
 from pprint import pprint
 from PySCPP import compiler, vm, AST, utils
-from PySCPP.utils import display_errors, Monad
+from PySCPP.utils import display_errors, Monad, info
 from typing import TypedDict
 from pathlib import Path
 from glob import glob
@@ -235,21 +235,27 @@ def main() -> None:
 	for fn in glob(options["input"]):
 		if not options["silent"]:
 			print(f"{fn}:")
-		t1 = time()
+
 		file = Path(fn)
 		code = file.read_text()
-		if options["tokens"] or options["tree"] or options["scan"]\
-			or options["objs"]:
-			show_tree_or_tokens(code, options, fn)
-			continue
-		monad = compiler.compile(code, fn)
-		if monad.errors:
-			if not options["silent"]:
-				display_errors(monad.errors)
-			quit(1)
+		if not fn.endswith(".txt"):
+			t1 = time()
+			if options["tokens"] or options["tree"] or options["scan"]\
+				or options["objs"]:
+				show_tree_or_tokens(code, options, fn)
+				continue
+			monad = compiler.compile(code, fn)
+			if monad.errors:
+				if not options["silent"]:
+					display_errors(monad.errors)
+				continue
 
-		if not options["silent"]:
-			print(f"Compiled in {(time() - t1) * 1000:.3f} ms")
+			if not options["silent"]:
+				print(f"Compiled in {(time() - t1) * 1000:.3f} ms")
+		else:
+			monad = Monad(errors=[], value=code)
+			if not options["silent"]:
+				info("Already compiled")
 
 		if options["run"]:
 			class IO:
@@ -269,7 +275,7 @@ def main() -> None:
 			if options["dump"]:
 				with open("dump.txt", "w") as f:
 					f.writelines(map(lambda i:str(i)+"\n",the_vm._memory._raw))
-					f.write(f"\n")
+					f.write("\n")
 					for k,v in the_vm._var_lookup.items():
 						f.write(f"{k}:{v}\n")
 			if options["out"] is None:

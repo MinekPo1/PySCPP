@@ -275,6 +275,9 @@ class SLVM:
 
 	@_wrap("ret")
 	def _ret(self):
+		if not self._stack:
+			self._running = False
+			return
 		self._code_ptr = self._stack.pop()
 
 	@_wrap("addWithVar")
