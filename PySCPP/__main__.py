@@ -25,6 +25,7 @@ class DirtyOptions(TypedDict):
 	graphics: bool
 	verbose: int
 	debug: bool
+	dump: bool
 
 
 class Options(TypedDict):
@@ -44,6 +45,7 @@ class Options(TypedDict):
 	graphics: bool
 	verbose: int
 	debug: bool
+	dump: bool
 
 
 def print_help():
@@ -76,6 +78,7 @@ def print_help():
 	print("    --verbose, -v Show more info. Can be entered multiple times.")
 	print("    --obj         Show the list of available objects and exit.")
 	print("    --debug, -D   Place debug symbols in the output.")
+	print("    --dump, -d    Dump the VM memory and var address after running.")
 	quit(0)
 
 
@@ -99,6 +102,8 @@ flags = {
 	"--objs": "objs",
 	"--debug": "debug",
 	"D": "debug",
+	"--dump": "dump",
+	"d": "dump",
 }
 
 multi_flags = {
@@ -129,6 +134,7 @@ defaults: DirtyOptions = {
 	"graphics": False,
 	"verbose": 0,
 	"debug": False,
+	"dump": False,
 }
 
 
@@ -260,8 +266,14 @@ def main() -> None:
 			the_vm = vm.SLVM(monad.value)
 			the_vm.console = IO()  # type:ignore
 			the_vm.run()
+			if options["dump"]:
+				with open("dump.txt", "w") as f:
+					f.writelines(map(lambda i:str(i)+"\n",the_vm._memory._raw))
+					f.write(f"\n")
+					for k,v in the_vm._var_lookup.items():
+						f.write(f"{k}:{v}\n")
 			if options["out"] is None:
-				quit()
+				continue
 		with open(
 			(
 				options["out"] or "{}.slvm.txt"

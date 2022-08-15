@@ -917,6 +917,11 @@ class Parser:
 					self.tokens_i -= 1
 					break
 
+				if self.token_view[1].type == Token.Type.NUMBER \
+					and self.token.value == '-':
+					self.consume_token()
+					self.token.value = f'-{self.token.value}'
+
 			if self.token.type in {Token.Type.IDENTIFIER, Token.Type.MEMORY_MODIFIER}:
 				if self.token.value in self.definitions:
 					a = AST.DefineRef(self.token.pos,self.definitions[self.token.value])
@@ -1874,6 +1879,7 @@ class Assembler:
 	auto: Auto[Assembler] = Auto()
 
 	arr_var: str | None
+	arr_ptr: bool = False
 
 	def __init__(self, tree: Scanner.ScannedRoot) -> None:
 		self.tree = tree
@@ -2399,7 +2405,7 @@ class Assembler:
 	def assemble_literal_array(self, literal_array: AST.LiteralArray) -> str:
 		if self.arr_var is None:
 			arr_var = self.op_var()
-		else:
+		elif not self.arr_ptr:
 			arr_var = self.arr_var
 			self.arr_var = None
 			size_var = self.op_var()
@@ -2415,16 +2421,54 @@ class Assembler:
 			self.lines.append(size_var)
 
 			self.op_depth -= 1
+		else:
+			arr_var = self.arr_var
+			self.arr_var = None
 
 		# store the values
-		# TODO - Multi dimensional arrays
 		index = self.op_var()
 		for i, value in enumerate(literal_array.values):
-			self.lines.append("ldi")
-			self.lines.append(str(i))
-			self.lines.append("storeAtVar")
-			self.lines.append(index)
-			self.assemble_auto(value)
+			if not self.arr_ptr:
+				self.lines.append("ldi")
+				self.lines.append(str(i))
+				self.lines.append("storeAtVar")
+				self.lines.append(index)
+
+			if isinstance(value,AST.LiteralArray):
+				ptr = self.op_var()
+				ptr2 = self.op_var()
+				# allocate the array
+				self.lines.append("imalloc")
+				self.lines.append(str(len(value.values)))
+				self.lines.append("storeAtVar")
+				self.lines.append(ptr)
+				self.lines.append("storeAtVar")
+				self.lines.append(ptr2)
+				p_arr_var = self.arr_var
+				p_arr_ptr = self.arr_ptr
+				self.arr_var = ptr
+				self.arr_ptr = True
+
+				self.assemble_literal_array(value)
+
+				self.arr_var = p_arr_var
+				self.arr_ptr = p_arr_ptr
+				self.op_depth -= 1
+				self.lines.append("loadAtVar")
+				self.lines.append(ptr2)
+				self.op_depth -= 1
+			else:
+				self.assemble_auto(value)
+
+			if self.arr_ptr:
+				self.lines.append("setValueAtPointer")
+				self.lines.append(arr_var)
+				self.lines.append("loadAtVar")
+				self.lines.append(arr_var)
+				self.lines.append("incA")
+				self.lines.append("storeAtVar")
+				self.lines.append(arr_var)
+				continue
 			self.lines.append("storeAtVarWithOffset")
 			self.lines.append(arr_var)
 			self.lines.append(index)
