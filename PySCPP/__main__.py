@@ -26,6 +26,7 @@ class DirtyOptions(TypedDict):
 	verbose: int
 	debug: bool
 	dump: bool
+	memory: str | None
 
 
 class Options(TypedDict):
@@ -46,6 +47,7 @@ class Options(TypedDict):
 	verbose: int
 	debug: bool
 	dump: bool
+	memory: str | None
 
 
 def print_help():
@@ -104,6 +106,8 @@ flags = {
 	"D": "debug",
 	"--dump": "dump",
 	"d": "dump",
+	"--graph": "graphics",
+	"g": "graphics",
 }
 
 multi_flags = {
@@ -118,6 +122,7 @@ options = {
 	"o": "out",
 	"i": "input",
 	"--inp": "input",
+	"--mem": "memory"
 }
 
 defaults: DirtyOptions = {
@@ -135,6 +140,7 @@ defaults: DirtyOptions = {
 	"verbose": 0,
 	"debug": False,
 	"dump": False,
+	"memory": None,
 }
 
 
@@ -232,6 +238,8 @@ def main() -> None:
 	compiler.OPT = options["opt"]
 	compiler.DEBUG = options["debug"]
 	utils.VERBOSITY = options["verbose"]
+	if options["memory"] is not None:
+		vm.SLVM.MAX_MEMORY_SIZE = int(options["memory"])  # type:ignore
 	for fn in glob(options["input"]):
 		if not options["silent"]:
 			print(f"{fn}:")
@@ -271,10 +279,13 @@ def main() -> None:
 			vm.SLVM.console = IO()  # type:ignore
 			the_vm = vm.SLVM(monad.value)
 			the_vm.console = IO()  # type:ignore
-			the_vm.run()
+			try:
+				the_vm.run()
+			except KeyboardInterrupt:
+				print("\nInterrupted")
 			if options["dump"]:
 				with open("dump.txt", "w") as f:
-					f.writelines(map(lambda i:str(i)+"\n",the_vm._memory._raw))
+					f.write("\n".join(map(str,the_vm._memory._raw)))
 					f.write("\n")
 					for k,v in the_vm._var_lookup.items():
 						f.write(f"{k}:{v}\n")

@@ -1,85 +1,77 @@
+from __future__ import annotations
 from PySCPP import AST
-from copy import deepcopy
+from typing import TYPE_CHECKING
 
-print_ = AST.FuncDef(
-	(4, 0, __file__),
-	[
-		AST.RawASM(
-			(7, 0, __file__),
-			[
-				AST.Literal(
-					(10, 0, __file__),
-					"print",
-				)
-			]
-		)
-	],
-	"print",
-	[
-		AST.Var(
-			(19, 0, __file__),
-			"!",
-		)
-	],
-	True
-)
+if TYPE_CHECKING:
+	from PySCPP.compiler import Assembler
 
-println = AST.FuncDef(
-	(27, 0, __file__),
-	[
-		AST.RawASM(
-			(30, 0, __file__),
-			[
-				AST.Literal(
-					(33, 0, __file__),
-					"println",
-				)
-			]
-		)
-	],
-	"println",
-	[
-		AST.Var(
-			(42, 0, __file__),
-			"!",
-		)
-	],
-	True
-)
 
-malloc = AST.FuncDef(
-	(50, 0, __file__),
-	[
-		AST.RawASM(
-			(53, 0, __file__),
-			[
-				AST.Literal(
-					(56, 0, __file__),
-					"malloc"
-				),
-				AST.Var(
-					(62, 0, __file__),
-					"size"
-				)
-			]
-		)
-	],
-	"malloc",
-	[
-		AST.Var(
-			(56, 0, __file__),
-			"size"
-		)
-	],
-	True
-)
+def print_(asm: Assembler, *args: AST.Expression) -> None:
+	for i in args[:-1]:
+		asm.assemble_auto(i)
+		asm.lines.append('print')
+		asm.lines.append('ldi')
+		asm.lines.append(' ')
+		asm.lines.append('print')
+
+	asm.assemble_auto(args[-1])
+	asm.lines.append('print')
+
+
+def println(asm: Assembler, *args: AST.Expression) -> None:
+	for i in args[:-1]:
+		asm.assemble_auto(i)
+		asm.lines.append('print')
+		asm.lines.append('ldi')
+		asm.lines.append(' ')
+		asm.lines.append('print')
+
+	asm.assemble_auto(args[-1])
+	asm.lines.append('println')
+
+
+def malloc(asm: Assembler, *args: AST.Expression) -> None:
+	assert len(args) == 1, 'malloc takes exactly one argument'
+	if isinstance(args[0], AST.Literal):
+		asm.lines.append('imalloc')
+		asm.lines.append(str(args[0].value))
+		return
+	asm.assemble_auto(args[0])
+	asm.lines.append('malloc')
+
+
+def free(asm: Assembler, *args: AST.Expression) -> None:
+	assert len(args) in {1,2}, 'free takes one or two arguments'
+	assert isinstance(args[0], AST.Var), 'the first arg of free must be a variable'
+	addr = asm.op_var()
+	size = asm.op_var()
+	asm.lines.append("getVarAddress")
+	asm.lines.append(args[0].name)
+	asm.lines.append("storeAtVar")
+	asm.lines.append('free')
+
+
+def exit(asm: Assembler, *args: AST.Expression) -> None:
+	assert len(args) == 1, 'free takes no argument'
+	asm.lines.append('done')
+
+
+def concat(asm: Assembler, *args: AST.Expression) -> None:
+	var = asm.op_var()
+	asm.assemble_auto(args[-1])
+	for i in args[1::-1]:
+		asm.lines.append('storeAtVar')
+		asm.lines.append(var)
+		asm.assemble_auto(i)
+		asm.lines.append('join')
+		asm.lines.append(var)
+
 
 all_builtins = {
 	"print": print_,
 	"println": println,
-	"malloc": malloc
+	"malloc": malloc,
+	"free": free,
+	"exit": exit,
+	"concat": concat,
 }
-
-
-def get_builtins():
-	return deepcopy(all_builtins)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import contextlib
+from PySCPP.utils import debug
 from typing import IO, Callable, Generic, Literal, TypeVar, overload
 from io import StringIO
 import math
@@ -11,11 +12,24 @@ PYGAME_INIT = False
 
 
 def init_pygame():
-	global pygame, PYGAME_INIT
+	global pygame, PYGAME_INIT, key_map
 	if not PYGAME_INIT:
 		import pygame
 		pygame.init()
 		PYGAME_INIT = True
+		key_map = {
+			"left arrow": pygame.K_LEFT,
+			"right arrow": pygame.K_RIGHT,
+			"up arrow": pygame.K_UP,
+			"down arrow": pygame.K_DOWN,
+			"w": pygame.K_w,
+			"a": pygame.K_a,
+			"s": pygame.K_s,
+			"d": pygame.K_d,
+			"space": pygame.K_SPACE,
+			"shift": pygame.K_LSHIFT,
+			"escape": pygame.K_ESCAPE
+		}
 
 
 _WT = TypeVar('_WT', float, str)
@@ -32,6 +46,16 @@ class _Wrapper:
 			self.instructions[instruction] = func
 			return func
 		return wrapper
+
+
+def to_int(x: str | float) -> int:
+	debug(f"to int: {x!r}")
+	try:
+		if isinstance(x, str):
+			x = float(x)
+		return int(x)
+	except ValueError:
+		return 0
 
 
 class SLVM:
@@ -96,6 +120,8 @@ class SLVM:
 			return self._raw[index]
 
 		def __setitem__(self, index: int, value: str | float) -> None:
+			if index >= len(self._raw):
+				self._raw.extend([0] * (index - len(self._raw) + 1))
 			self._raw[index] = value
 
 		def append(self, value: str | float) -> None:
@@ -117,6 +143,7 @@ class SLVM:
 	_sleep_to: float = 0
 	_array_sizes: list[int]
 	_start_time: float | None = None
+	_graphic_color = (255, 255, 255)
 
 	console: IO[str]
 	"The io object the VM writes/reads to/from. Default is a StringIO object."
@@ -199,7 +226,7 @@ class SLVM:
 			raise StopIteration()
 		if i not in self._wrap.instructions:
 			self._running = False
-			raise ValueError(f"Unknown instruction: {i}")
+			raise ValueError(f"Unknown instruction: {i} on line {self._code_ptr}")
 		self._wrap.instructions[i](self)
 
 	def run(self) -> None:
@@ -302,7 +329,10 @@ class SLVM:
 	def _divWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
-		self._float_a /= self._memory.floats[self._var_lookup[var]]
+		try:
+			self._float_a /= self._memory.floats[self._var_lookup[var]]
+		except ZeroDivisionError:
+			self._float_a = 0.0
 
 	@_wrap("modWithVar")
 	def _modWithVar(self):
@@ -397,39 +427,39 @@ class SLVM:
 			int(self._float_a) or int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("boolEqualsWithVar")
-	def _boolEqualsWithVar(self):
+	@_wrap("boolEqualWithVar")
+	def _boolEqualWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._a_reg = float(
 			int(self._float_a) == int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("largerOrEqualsWithVar")
-	def _largerOrEqualsWithVar(self):
+	@_wrap("largerThanOrEqualWithVar")
+	def _largerOrEqualWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._a_reg = float(
 			int(self._float_a) >= int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("smallerOrEqualsWithVar")
-	def _smallerOrEqualsWithVar(self):
+	@_wrap("smallerThanOrEqualWithVar")
+	def _smallerOrEqualWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._a_reg = float(
 			int(self._float_a) <= int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("boolNotEqualsWithVar")
-	def _boolNotEqualsWithVar(self):
+	@_wrap("boolNotEqualWithVar")
+	def _boolNotEqualWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
 		self._a_reg = float(
 			int(self._float_a) != int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("largerWithVar")
+	@_wrap("largerThanWithVar")
 	def _largerWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
@@ -437,7 +467,7 @@ class SLVM:
 			int(self._float_a) > int(self._memory.floats[self._var_lookup[var]])
 		)
 
-	@_wrap("smallerWithVar")
+	@_wrap("smallerThanWithVar")
 	def _smallerWithVar(self):
 		var = self._get_next_safe()
 		self._prep_var(var)
@@ -643,8 +673,10 @@ class SLVM:
 	@_wrap("isKeyPressed")
 	def _isKeyPressed(self):
 		var = self._get_next_safe()
+		if not GRAPHICS:
+			return
 		self._prep_var(var)
-		key_code = getattr(pygame, f"K_{self._memory.strings[self._var_lookup[var]]}")
+		key_code = key_map[self._memory.strings[self._var_lookup[var]]]
 		self._a_reg = float(pygame.key.get_pressed()[key_code])
 
 	@_wrap("createArray")
@@ -729,8 +761,35 @@ class SLVM:
 
 	@_wrap("graphicsFlip")
 	def _graphicsFlip(self):
-		# TODO
-		raise NotImplementedError
+		if not GRAPHICS:
+			return
+		for i in self._graphic_buffer:
+			with contextlib.suppress(Exception):
+				if i.startswith("putPixel"):
+					x, y = i.split(" ")[1:]
+					x, y = to_int(x), to_int(y)
+					self._screen.set_at((x, y), self._graphic_color)
+				if i.startswith("putLine"):
+					x1, y1, x2, y2 = i.split(" ")[1:]
+					x1, y1 = to_int(x1), to_int(y1)
+					x2, y2 = to_int(x2), to_int(y2)
+					debug("putLine",x1,y1,x2,y2)
+					pygame.draw.line(self._screen, self._graphic_color, (x1, y1), (x2, y2))
+					continue
+				if i.startswith("putRect"):
+					x, y, w, h = i.split(" ")[1:]
+					x, y = to_int(x), to_int(y)
+					w, h = to_int(w), to_int(h)
+					pygame.draw.rect(self._screen, self._graphic_color, (x, y, w, h))
+					continue
+				if i.startswith("setColor"):
+					color = to_int(i.split(" ")[1])
+					self._graphic_color = (color//256//256, color//256 % 256, color % 256)
+					continue
+
+		pygame.display.flip()
+		pygame.event.pump()
+		self._graphic_buffer = []
 
 	@_wrap("newLine")
 	def _newLine(self):

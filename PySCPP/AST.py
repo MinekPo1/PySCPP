@@ -109,6 +109,7 @@ class MemoryModifier(Expression):
 class FuncCall(Expression):
 	name: str
 	args: list[Expression]
+	is_builtin: bool = False
 
 
 @dataclass
@@ -157,3 +158,15 @@ class StrongArrayRef(Expression):
 class WeakArrayRef(Expression):
 	array: Expression
 	index: Expression
+
+
+@dataclass
+class Switch(Element):
+	cases: list[tuple[list[Literal], Case]]
+	value: Expression
+	default: Case | None = None
+
+
+@dataclass
+class Case(Container):
+	pass

@@ -2,7 +2,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable, Generic, Type, TypeAlias, TypeVar, NewType, \
+from typing import Any, Callable, Generic, Literal, Type, TypeAlias, TypeVar, NewType, \
 	cast, Iterator
 from re import compile as rec
 from pathlib import Path
@@ -723,6 +723,9 @@ class Parser:
 			if self.token.value == "var":
 				self.parse_var_def()
 				return
+			if self.token.value == "switch":
+				self.parse_switch()
+				return
 
 		# if we get here, we have a function call or a variable assignment
 		# we need to figure out which
@@ -1224,6 +1227,99 @@ class Parser:
 		self.head.children.append(for_)
 
 	@_wrap
+	def parse_switch(self):
+		switch = AST.Switch(self.token.pos,[],None)  # type:ignore
+		self.consume_token()
+
+		assert self.token.type == Token.Type.PAREN_OPEN,\
+			"Expected a parenthesis"
+		self.consume_token()
+
+		switch.value = self.parse_expression()
+
+		self.consume_token()
+		assert self.token.type == Token.Type.PAREN_CLOSE,\
+			"Expected a closing parenthesis"
+		self.consume_token()
+
+		values = []
+
+		# block containing cases
+		assert self.token.type == Token.Type.BRACKET_OPEN,\
+				"Expected opening bracket."
+		self.consume_token()
+
+		current_values: list[AST.Literal] = []
+
+		consumer = self.consumer()
+		while consumer:
+			if self.token.type == Token.Type.BRACKET_CLOSE:
+				self.consume_token()
+				break
+			if self.token.value == "case":
+				self.consume_token()
+				# value followed by an arrow
+
+				assert self.token.type in (Token.Type.STRING, Token.Type.NUMBER),\
+						"Expected literal value"
+				if self.token.type == Token.Type.STRING:
+					value = self.parse_string()
+				else:
+					value = self.parse_number()
+				assert value not in values, "Duplicate case value"
+				current_values.append(value)
+
+				self.consume_token()
+				assert self.token.type == Token.Type.ARROW,\
+					"Expected arrow (->)"
+				self.consume_token()
+			elif self.token.value == "default":
+				self.consume_token()
+				assert self.token.type == Token.Type.ARROW,\
+					"Expected arrow (->)"
+				assert not current_values,\
+					"Expected case body"
+				self.consume_token()
+				case = AST.Case(self.token.pos,[])
+				self.stack.append(case)
+				if self.token.value == '{':
+					self.consume_token()
+					while self.token.value != '}':
+						self.parse_statement()
+						self.consume_token()
+					assert self.token.value == '}', "Expected closing bracket "
+				else:
+					self.parse_statement()
+				self.stack.pop()
+				switch.default = case
+			else:
+				assert current_values,\
+					"Expected case or default"
+				case = AST.Case(self.token.pos,[])
+				self.stack.append(case)
+				if self.token.value == '{':
+					self.consume_token()
+					while self.token.value != '}':
+						debug("!!!")
+						self.parse_statement()
+						self.consume_token()
+						debug(self.token.value)
+					assert self.token.value == '}', "Expected closing bracket "
+				else:
+					self.parse_statement()
+				self.stack.pop()
+				switch.cases.append((current_values,case))
+				values.extend(current_values)
+				current_values = []
+				self.consume_token()
+
+		else:
+			assert False, "Expected closing bracket, got EOF"
+
+
+		self.head.children.append(switch)
+
+	@_wrap
 	def parse_strong_array_ref(self) -> AST.StrongArrayRef:
 		array_ref = AST.StrongArrayRef(pos=self.token.pos,
 			array=None, index=None)  # type:ignore
@@ -1328,7 +1424,9 @@ class Scanner:
 		- namespace flattening
 		- includes
 	"""
-	objects: dict[str, AST.VarDef | AST.FuncDef | ScannedFunction | AST.Namespace]
+	objects: dict[str, AST.VarDef | AST.FuncDef | ScannedFunction | AST.Namespace
+			| Literal["builtin"]
+	]
 	is_private: dict[str,bool]
 	to_be_checked: dict[str,AST.FuncDef]
 	remote: bool
@@ -1390,8 +1488,9 @@ class Scanner:
 		"""
 		# add builtins
 		self.def_private = True
-		for i in builtins.get_builtins().values():
-			self.tree.children.insert(0, i)
+		for n, b in builtins.all_builtins.items():
+			self.objects[n] = "builtin"
+
 		self.scan_root(self.tree)
 		if OPT < 3:
 			for k, v in self.objects.items():
@@ -1644,6 +1743,8 @@ class Scanner:
 				for g_child in child.children:
 					if isinstance(g_child, AST.VarDef):
 						g_child.var.name = f"{namespace.name}::{g_child.var.name}"
+				for arg in child.args:
+					arg.name = f"{namespace.name}::{arg.name}"
 
 		self.def_private = p_def_priv
 
@@ -1692,6 +1793,12 @@ class Scanner:
 						" Note: main function cannot be called."
 					)
 				raise AssertionError(f"Name error: \"{call.name}\"")
+			if self.objects[func] == "builtin":
+				call.is_builtin = True
+				for arg in call.args:
+					self.scan_auto(arg)
+				return
+
 			assert isinstance(self.objects[func], ScannedFunction),\
 				f"\"{call.name}\" is not a function"
 			raise AssertionError(
@@ -1812,6 +1919,14 @@ class Scanner:
 		for child in arr.values:
 			self.scan_auto(child)
 
+	@auto(AST.Switch)
+	def scan_switch(self, switch: AST.Switch):
+		self.scan_auto(switch.value)
+		for _, case in switch.cases:
+			self.scan_container(case)
+		if switch.default is not None:
+			self.scan_container(switch.default)
+
 
 def _wrapA(func):
 	def wrapper(self, elm: AST.Element):
@@ -1891,10 +2006,10 @@ oper_map = {
 	"..": "join",
 	"&&": "boolAndWithVar",
 	"||": "boolOrWithVar",
-	"==": "boolEqualsWithVar",
+	"==": "boolEqualWithVar",
 	">=": "largerThanOrEqualWithVar",
 	"<=": "smallerThanOrEqualWithVar",
-	"!=": "boolNotEqualsWithVar",
+	"!=": "boolNotEqalWithVar",
 	">":  "largerThanWithVar",
 	"<":  "smallerThanWithVar",
 }
@@ -1982,6 +2097,7 @@ class Assembler:
 					and not child.inline:
 				# create label
 				self.labels[f":{child.name}"] = len(self.lines)
+				debug(f"label :{child.name}")
 				end = self.symbol(child.name)
 				if f":{child.name}" in self.labels_to_be_defined:
 					self.labels_to_be_defined.remove(f":{child.name}")
@@ -1991,6 +2107,8 @@ class Assembler:
 					self.lines.append("ret")
 
 		for label in self.labels_to_be_defined:
+			if label in self.labels:
+				continue
 			self.errors.append(Error(
 				f"Internal assembler error: Label {label} is not defined",
 				self.tree.pos
@@ -2167,6 +2285,10 @@ class Assembler:
 	@auto(AST.FuncCall)
 	def assemble_func_call(self, call: AST.FuncCall) -> None:
 
+		if call.is_builtin:
+			builtins.all_builtins[call.name](self,*call.args)
+			return
+
 		if self.functions[call.name].inline:
 			self.assemble_inline_function(call)
 			return
@@ -2280,17 +2402,21 @@ class Assembler:
 	@auto(AST.Operation)
 	@_wrapA
 	def assemble_operation(self, op: AST.Operation) -> None:
-		self.assemble_auto(op.left)
-		if self.op_depth == len(self.op_vars):
-			self.op_vars.append(next(self.ovg))
-		self.lines.append("storeAtVar")
-		self.lines.append(self.op_vars[self.op_depth])
+		if not isinstance(op.right,AST.Var):
+			self.assemble_auto(op.right)
+			if self.op_depth == len(self.op_vars):
+				self.op_vars.append(next(self.ovg))
+			data_var = self.op_vars[self.op_depth]
+			self.lines.append("storeAtVar")
+			self.lines.append(data_var)
+		else:
+			data_var = op.right.name
 		self.op_depth += 1
-		self.assemble_auto(op.right)
+		self.assemble_auto(op.left)
 		self.op_depth -= 1
 		assert op.op in oper_map, "Unknown operation"
 		self.lines.append(oper_map[op.op])
-		self.lines.append(self.op_vars[self.op_depth])
+		self.lines.append(data_var)
 
 	@auto(AST.DefineRef)
 	def assemble_define_ref(self, ref: AST.DefineRef) -> None:
@@ -2520,6 +2646,38 @@ class Assembler:
 		self.op_depth -= 1
 
 		return arr_var
+
+	@auto(AST.Switch)
+	def assemble_switch(self, switch: AST.Switch):
+
+		label_prefix = f":switch:{switch.pos[0]}"
+
+		value = self.op_var()
+
+		self.assemble_auto(switch.value)
+
+		self.lines.append("storeAtVar")
+		self.lines.append(value)
+
+		for i, (values, _) in enumerate(switch.cases):
+			for c_value in values:
+				self.assemble_auto(c_value)
+				self.lines.append("boolEqualWithVar")
+				self.lines.append(value)
+				self.lines.append("jt")
+				self.lines.append(f"{label_prefix}:{i}")
+
+		if switch.default is not None:
+			list(map(self.assemble_auto,switch.default.children))
+		self.lines.append("jmp")
+		self.lines.append(f"{label_prefix}:end")
+		for i, (_, case) in enumerate(switch.cases):
+			self.labels[f"{label_prefix}:{i}"] = len(self.lines)
+			list(map(self.assemble_auto,case.children))
+			self.lines.append("jmp")
+			self.lines.append(f"{label_prefix}:end")
+		self.labels[f"{label_prefix}:end"] = len(self.lines)
+		self.op_depth -= 1
 
 
 def compile(code: str, source: str, force: bool = False):
