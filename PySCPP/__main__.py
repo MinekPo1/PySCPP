@@ -1,6 +1,6 @@
 from sys import argv
 from pprint import pprint
-from PySCPP import compiler, vm, AST, utils
+from PySCPP import compiler, AST, utils
 from PySCPP.utils import display_errors, Monad, info
 from typing import TypedDict
 from pathlib import Path
@@ -17,16 +17,12 @@ class DirtyOptions(TypedDict):
 	silent: bool
 	tree: bool
 	scan: bool
-	run: bool
 	out: str | None
 	opt: int
 	lib: bool
 	objs: bool
-	graphics: bool
 	verbose: int
 	debug: bool
-	dump: bool
-	memory: str | None
 
 
 class Options(TypedDict):
@@ -38,16 +34,12 @@ class Options(TypedDict):
 	silent: bool
 	tree: bool
 	scan: bool
-	run: bool
 	out: str | None
 	opt: int
 	lib: bool
 	objs: bool
-	graphics: bool
 	verbose: int
 	debug: bool
-	dump: bool
-	memory: str | None
 
 
 def print_help():
@@ -64,7 +56,6 @@ def print_help():
 	print("    --tree, -T    Output the parsed tree. Don't scan the file.")
 	print("    --scan, -S    Output the scanned tree. Don't assemble the file.")
 	print("    --silent, -s  Don't print errors.")
-	print("    --run, -r     Run the created assembly.")
 	print("    --inp, -i     Where to take the code from. Can be a glob pattern.")
 	print("    --out, -o     Where to put the result. {} will be replaced with")
 	print("                  the input file name.")
@@ -76,11 +67,8 @@ def print_help():
 		"                  time the compiler will not preform any optimizations."
 	)
 	print("    --lib, -l     Show the list of available libraries and exit.")
-	print("    --graph, -g   Enable graphics mode in the vm.")
-	print("    --verbose, -v Show more info. Can be entered multiple times.")
+	print("    --verb, -v    Show more info. Can be entered multiple times.")
 	print("    --obj         Show the list of available objects and exit.")
-	print("    --debug, -D   Place debug symbols in the output.")
-	print("    --dump, -d    Dump the VM memory and var address after running.")
 	quit(0)
 
 
@@ -93,8 +81,6 @@ flags = {
 	"t": "tokens",
 	"--silent": "silent",
 	"s": "silent",
-	"--run": "run",
-	"r": "run",
 	"T": "tree",
 	"--tree": "tree",
 	"--scan": "scan",
@@ -104,25 +90,20 @@ flags = {
 	"--objs": "objs",
 	"--debug": "debug",
 	"D": "debug",
-	"--dump": "dump",
-	"d": "dump",
-	"--graph": "graphics",
-	"g": "graphics",
 }
 
 multi_flags = {
 	"--opt": "opt",
 	"O": "opt",
 	"v": "verbose",
-	"--verbose": "verbose",
+	"--verb": "verbose",
 }
 
 options = {
 	"--out": "out",
 	"o": "out",
 	"i": "input",
-	"--inp": "input",
-	"--mem": "memory"
+	"--inp": "input"
 }
 
 defaults: DirtyOptions = {
@@ -131,16 +112,12 @@ defaults: DirtyOptions = {
 	"silent": False,
 	"tree": False,
 	"scan": False,
-	"run": False,
 	"out": None,
 	"opt": 0,
 	"lib": False,
 	"objs": False,
-	"graphics": False,
 	"verbose": 0,
 	"debug": False,
-	"dump": False,
-	"memory": None,
 }
 
 
@@ -233,13 +210,9 @@ def main() -> None:
 			print(i.name)
 		quit(0)
 
-	if options["graphics"]:
-		vm.GRAPHICS = True
 	compiler.OPT = options["opt"]
 	compiler.DEBUG = options["debug"]
 	utils.VERBOSITY = options["verbose"]
-	if options["memory"] is not None:
-		vm.SLVM.MAX_MEMORY_SIZE = int(options["memory"])  # type:ignore
 	for fn in glob(options["input"]):
 		if not options["silent"]:
 			print(f"{fn}:")
@@ -265,32 +238,6 @@ def main() -> None:
 			if not options["silent"]:
 				info("Already compiled")
 
-		if options["run"]:
-			class IO:
-				def write(self, s: str) -> None:
-					print(s, end="")
-
-				def read(self) -> str:
-					return input()
-
-				def flush(self) -> None:
-					pass
-
-			vm.SLVM.console = IO()  # type:ignore
-			the_vm = vm.SLVM(monad.value)
-			the_vm.console = IO()  # type:ignore
-			try:
-				the_vm.run()
-			except KeyboardInterrupt:
-				print("\nInterrupted")
-			if options["dump"]:
-				with open("dump.txt", "w") as f:
-					f.write("\n".join(map(str,the_vm._memory._raw)))
-					f.write("\n")
-					for k,v in the_vm._var_lookup.items():
-						f.write(f"{k}:{v}\n")
-			if options["out"] is None:
-				continue
 		with open(
 			(
 				options["out"] or "{}.slvm.txt"

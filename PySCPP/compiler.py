@@ -2,8 +2,8 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable, Generic, Literal, Type, TypeAlias, TypeVar, NewType, \
-	cast, Iterator
+from typing import Any, Callable, Generic, Literal, Type, TypeAlias, TypeVar,\
+	NewType, cast, Iterator
 from re import compile as rec
 from pathlib import Path
 from string import printable
@@ -816,7 +816,6 @@ class Parser:
 				)
 			else:
 				var.l_value = expr
-
 		else:
 			assert self.token.type == Token.Type.IDENTIFIER, "Syntax error: " \
 				f"unexpected token `{self.token.value}`"
@@ -835,9 +834,28 @@ class Parser:
 				"Expected closing square bracket")
 			self.consume_token()
 
-		if self.token.type == Token.Type.MEMORY_MODIFIER:
-			var.modifier = self.token.value
+		while self.token.type == Token.Type.SQ_BRACKET_OPEN:
 			self.consume_token()
+			offset = self.parse_expression()
+			self.consume_token()
+			self.assert_(self.token.type == Token.Type.SQ_BRACKET_CLOSE,
+				"Expected closing square bracket")
+			self.consume_token()
+			assert var.offset is not None
+			# since the previous statement must have triggered
+			if isinstance(var.l_value,AST.Var):
+				var.l_value = AST.StrongArrayRef(self.token.pos,var.l_value,var.offset)
+			else:
+				var.l_value = AST.WeakArrayRef(self.token.pos,var.l_value,var.offset)
+			var.offset = offset
+
+		"""
+			No idea why this was here tbh
+
+			if self.token.type == Token.Type.MEMORY_MODIFIER:
+				var.modifier = self.token.value
+				self.consume_token()
+		"""
 
 		if self.token.type == Token.Type.MODIFIER:
 			var.modifier = self.token.value
@@ -1316,7 +1334,6 @@ class Parser:
 		else:
 			assert False, "Expected closing bracket, got EOF"
 
-
 		self.head.children.append(switch)
 
 	@_wrap
@@ -1339,7 +1356,7 @@ class Parser:
 
 	def parse_weak_array_ref(self,array: AST.Expression) -> AST.WeakArrayRef:
 		array_ref = AST.WeakArrayRef(pos=self.token.pos,
-			array=array, index=None)
+			array=array, index=None)  # type:ignore
 		# we assume that the `[` token is there
 		# we consume two tokens because one is the array expression.
 		self.consume_token()
@@ -1646,7 +1663,9 @@ class Scanner:
 			assert isinstance(func_obj, ScannedFunction),\
 				f"Namespace collision: {func.name} for {len(func.args)} args"
 			if not func.private \
-				and self.is_private.get(f"{self.namespace}::{func.name}".removeprefix("::"), False):
+				and self.is_private.get(
+					f"{self.namespace}::{func.name}".removeprefix("::"), False
+				):
 				self.is_private[f"{self.namespace}::{func.name}".removeprefix("::")] \
 					= False
 
@@ -1829,7 +1848,8 @@ class Scanner:
 	def scan_set(self, set: AST.VarSet):
 		self.scan_auto(set.l_value)
 		if set.offset is not None:
-			if isinstance(set.offset, AST.Literal) and set.offset.value in {"0","0.",".0","0.0"} and OPT <= 1:
+			if isinstance(set.offset, AST.Literal) \
+				and set.offset.value in {"0","0.",".0","0.0"} and OPT <= 1:
 				set.offset = None
 			else:
 				self.scan_auto(set.offset)
@@ -2073,13 +2093,7 @@ class Assembler:
 		# set global variables
 		for child in self.tree.children:
 			if isinstance(child, AST.VarDef):
-				if child.offset is not None:
-					self.lines.append("createArray")
-					self.lines.append(self.var(child.var.name))
-				if child.value is not None:
-					self.assemble_auto(child.value)
-					self.lines.append("storeAtVar")
-					self.lines.append(self.var(child.var.name))
+				self.assemble_auto(child)
 			if isinstance(child, AST.FuncDef):
 
 				self.functions[child.name] = child
@@ -2158,6 +2172,7 @@ class Assembler:
 		self.lines.append("$SYMBOL")
 		self.lines.append("loadAtVar")
 		self.lines.append(var)
+
 		def end():
 			if self.op_depth == len(self.op_vars):
 				self.op_vars.append(next(self.ovg))
@@ -2214,9 +2229,10 @@ class Assembler:
 		return self.var_lookup[name]
 
 	def op_var(self) -> str:
-		if self.op_depth == len(self.op_vars):
+		while self.op_depth >= len(self.op_vars):
 			self.op_vars.append(next(self.ovg))
 		self.op_depth += 1
+		debug(self.op_depth)
 		return self.op_vars[self.op_depth - 1]
 
 	@_wrapA
@@ -2255,9 +2271,12 @@ class Assembler:
 			self.assemble_auto(var.offset)
 			self.lines.append("storeAtVar")
 			self.lines.append(offset)
-			self.lines.append("createArray")
-			self.lines.append(name)
+			self.lines.append("malloc")
 			self.lines.append(offset)
+			self.lines.append("setVarAddress")
+			self.lines.append(name)
+			# this introduces a memory leak
+			# oh well.
 			self.op_depth -= 1
 
 		if var.value is not None:
@@ -2286,7 +2305,7 @@ class Assembler:
 	def assemble_func_call(self, call: AST.FuncCall) -> None:
 
 		if call.is_builtin:
-			builtins.all_builtins[call.name](self,*call.args)
+			builtins.all_builtins[call.name](self,*call.args)  # type:ignore
 			return
 
 		if self.functions[call.name].inline:
@@ -2531,7 +2550,8 @@ class Assembler:
 
 	@auto(AST.StrongArrayRef)
 	def assemble_strong_array_ref(self, array_ref: AST.StrongArrayRef) -> None:
-		if isinstance(array_ref.index,AST.Literal) and array_ref.index.value in {"0.0","0",".0","0."} and OPT <= 1:
+		if isinstance(array_ref.index,AST.Literal)\
+			and array_ref.index.value in {"0.0","0",".0","0."} and OPT <= 1:
 			self.lines.append("loadAtVar")
 			self.lines.append(self.var(array_ref.array.name))
 			return
@@ -2560,7 +2580,6 @@ class Assembler:
 				self.lines.append("getValueAtPointerOfA")
 				return
 
-
 		arr = self.op_var()
 		self.lines.append("storeAtVar")
 		self.lines.append(arr)
@@ -2576,26 +2595,10 @@ class Assembler:
 	def assemble_literal_array(self, literal_array: AST.LiteralArray) -> str:
 		if self.arr_var is None:
 			arr_var = self.op_var()
-		elif not self.arr_ptr:
-			arr_var = self.arr_var
-			self.arr_var = None
-			size_var = self.op_var()
-
-			# define and allocate the array
-			self.lines.append("ldi")
-			self.lines.append(str(len(literal_array.values)))
-			self.lines.append("storeAtVar")
-			self.lines.append(size_var)
-
-			self.lines.append("createArray")
-			self.lines.append(arr_var)
-			self.lines.append(size_var)
-
-			self.op_depth -= 1
 		else:
 			arr_var = self.arr_var
 			self.arr_var = None
-
+			# assume the array has been already allocated
 		# store the values
 		index = self.op_var()
 		for i, value in enumerate(literal_array.values):
