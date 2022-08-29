@@ -70,8 +70,6 @@ After cloning the repo, execute the `PySCPP/PySCPP` as a module with python:
         println("foo");
         bar();
 
-- Arrays cannot be placed in arrays.
-
 - `_asm_` and `_getValuOfA_` are keywords instead of methods and can be used without parentheses.
 
 - functions, variables and namespaces can be explicitly made private with the `private` keyword.
